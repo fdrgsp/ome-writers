@@ -1,20 +1,35 @@
 """Models used to represent OME schema metadata."""
 
 from ._base import FrozenBaseModel
-from ._dimensions import Dimension, DimensionLabel, UnitTuple, dims_to_ome
-from ._hcs import Acquisition, Column, Plate, Row, Well, WellImage, WellInPlate
+from ._dimensions import (
+    Dimension,
+    DimensionLabel,
+    UnitTuple,
+    dims_to_ngff_axes,
+    dims_to_ome_info,
+)
+from ._hcs import (
+    AcquisitionNGFF,
+    ColumnNGFF,
+    PlateNGFF,
+    RowNGFF,
+    WellImageNGFF,
+    WellInPlateNGFF,
+    WellNGFF,
+)
 
 __all__ = [
-    "Acquisition",
-    "Column",
+    "AcquisitionNGFF",
+    "ColumnNGFF",
     "Dimension",
     "DimensionLabel",
     "FrozenBaseModel",
-    "Plate",
-    "Row",
+    "PlateNGFF",
+    "RowNGFF",
     "UnitTuple",
-    "Well",
-    "WellImage",
-    "WellInPlate",
-    "dims_to_ome",
+    "WellImageNGFF",
+    "WellInPlateNGFF",
+    "WellNGFF",
+    "dims_to_ngff_axes",
+    "dims_to_ome_info",
 ]

@@ -9,7 +9,7 @@ from pydantic import model_validator
 from ome_writers.model import FrozenBaseModel
 
 
-class Acquisition(FrozenBaseModel):
+class AcquisitionNGFF(FrozenBaseModel):
     """A single acquisition in an HCS plate.
 
     Represents an acquisition event that can contain multiple fields of view.
@@ -24,7 +24,7 @@ class Acquisition(FrozenBaseModel):
     endtime: int | None = None  # epoch timestamp
 
 
-class Row(FrozenBaseModel):
+class RowNGFF(FrozenBaseModel):
     """A single row in an HCS plate.
 
     Row names must be alphanumeric and unique within the plate.
@@ -33,7 +33,7 @@ class Row(FrozenBaseModel):
     name: str
 
 
-class Column(FrozenBaseModel):
+class ColumnNGFF(FrozenBaseModel):
     """A single column in an HCS plate.
 
     Column names must be alphanumeric and unique within the plate.
@@ -42,7 +42,7 @@ class Column(FrozenBaseModel):
     name: str
 
 
-class WellInPlate(FrozenBaseModel):
+class WellInPlateNGFF(FrozenBaseModel):
     """A single well within an HCS plate.
 
     The path must be in the format "{row_name}/{column_name}".
@@ -54,7 +54,7 @@ class WellInPlate(FrozenBaseModel):
     columnIndex: int
 
 
-class WellImage(FrozenBaseModel):
+class WellImageNGFF(FrozenBaseModel):
     """A single image (field of view) within a well.
 
     Each image has a path and optionally references an acquisition.
@@ -64,32 +64,32 @@ class WellImage(FrozenBaseModel):
     acquisition: int | None = None
 
 
-class Well(FrozenBaseModel):
+class WellNGFF(FrozenBaseModel):
     """Metadata for a single well in an HCS plate.
 
     Contains all images (fields of view) within the well.
     """
 
-    images: Sequence[WellImage]
+    images: Sequence[WellImageNGFF]
     version: str = "0.5"
 
 
-class Plate(FrozenBaseModel):
+class PlateNGFF(FrozenBaseModel):
     """A single HCS plate containing wells arranged in rows and columns.
 
     Follows the OME-NGFF 0.5 specification for high-content screening.
     """
 
-    columns: Sequence[Column]
-    rows: Sequence[Row]
-    wells: Sequence[WellInPlate]
-    acquisitions: Sequence[Acquisition] | None = None
+    columns: Sequence[ColumnNGFF]
+    rows: Sequence[RowNGFF]
+    wells: Sequence[WellInPlateNGFF]
+    acquisitions: Sequence[AcquisitionNGFF] | None = None
     field_count: int | None = None
     name: str | None = None
     version: str = "0.5"
 
     @model_validator(mode="after")
-    def validate_plate(self) -> Plate:
+    def validate_plate(self) -> PlateNGFF:
         """Validate that all well paths reference existing rows and columns."""
         self._validate_well_paths()
         self._validate_unique_names()

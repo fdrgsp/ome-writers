@@ -10,14 +10,15 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
+from ome_writers._ome_metadata import ome_meta
 from ome_writers._stream_base import MultiPositionOMEStream
-from ome_writers.model import dims_to_ome
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     import numpy as np
 
+    from ome_writers.model import PlateNGFF, WellNGFF
     from ome_writers.model._dimensions import Dimension
 
 
@@ -61,11 +62,16 @@ class TifffileStream(MultiPositionOMEStream):
         path: str,
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
+        plate: PlateNGFF | None = None,
+        well: WellNGFF | None = None,
+        wells: dict[str, WellNGFF] | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
-        # Use MultiPositionOMEStream to handle position logic
-        num_positions, tczyx_dims = self._init_positions(dimensions)
+        # Use MultiPositionOMEStream to handle position logic with HCS support
+        num_positions, tczyx_dims = self._init_positions(
+            dimensions, plate=plate, wells=wells
+        )
         self._delete_existing = overwrite
         self._path = Path(self._normalize_path(path))
         shape_5d = tuple(d.size for d in tczyx_dims)
@@ -74,7 +80,7 @@ class TifffileStream(MultiPositionOMEStream):
 
         # Create a memmap for each position
         for p_idx, fname in enumerate(fnames):
-            ome = dims_to_ome(tczyx_dims, dtype=dtype, tiff_file_name=fname)
+            ome = ome_meta(tczyx_dims, dtype=dtype, tiff_file_name=fname)
             self._queues[p_idx] = q = Queue()  # type: ignore
             self._threads[p_idx] = thread = WriterThread(
                 fname,

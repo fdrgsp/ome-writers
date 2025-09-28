@@ -11,7 +11,11 @@ except PackageNotFoundError:  # pragma: no cover
 
 from ._auto import BackendName, create_stream
 from ._stream_base import OMEStream
-from ._util import dims_from_useq, fake_data_for_sizes
+from ._util import (
+    dims_from_useq,
+    fake_data_for_sizes,
+    ngff_plate_and_wells_from_useq,
+)
 from .backends._acquire_zarr import AcquireZarrStream
 from .backends._tensorstore import TensorStoreZarrStream
 from .backends._tifffile import TifffileStream
@@ -30,4 +34,5 @@ __all__ = [
     "create_stream",
     "dims_from_useq",
     "fake_data_for_sizes",
+    "ngff_plate_and_wells_from_useq",
 ]

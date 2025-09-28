@@ -6,7 +6,16 @@ from typing import TYPE_CHECKING, cast, get_args
 import numpy as np
 import numpy.typing as npt
 
-from ome_writers import Dimension, DimensionLabel
+from ome_writers.model import (
+    ColumnNGFF,
+    Dimension,
+    DimensionLabel,
+    PlateNGFF,
+    RowNGFF,
+    WellImageNGFF,
+    WellInPlateNGFF,
+    WellNGFF,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -167,3 +176,88 @@ def dims_from_useq(
         Dimension(label="y", size=image_height, unit=_units["y"]),
         Dimension(label="x", size=image_width, unit=_units["x"]),
     ]
+
+
+def ngff_plate_and_wells_from_useq(
+    seq: useq.MDASequence,
+) -> tuple[PlateNGFF | None, dict[str, WellNGFF]]:
+    """Convert a useq.MDASequence to both PlateNGFF and WellNGFF objects.
+
+    Parameters
+    ----------
+    seq : useq.MDASequence
+        The `useq.MDASequence` to convert.
+
+    Returns
+    -------
+    tuple[PlateNGFF | None, dict[str, WellNGFF]]
+        A tuple containing:
+        - PlateNGFF object if the sequence contains plate information, otherwise None
+        - Dictionary mapping well paths to WellNGFF objects (empty if no plate info)
+    """
+    try:
+        from useq import MDASequence, WellPlatePlan
+    except ImportError:
+        return None, {}
+    else:
+        if not isinstance(seq, MDASequence):
+            return None, {}
+
+    # Check if stage_positions contains a WellPlatePlan
+    stage_positions = seq.stage_positions
+    if not isinstance(stage_positions, WellPlatePlan):
+        return None, {}
+
+    # Get plate information - create plate directly
+    well_plate = stage_positions.plate
+
+    # Create Row objects from plate rows
+    row_names = [chr(ord("A") + i) for i in range(well_plate.rows)]
+    col_names = [str(i + 1) for i in range(well_plate.columns)]
+
+    rows = [RowNGFF(name=row_name) for row_name in row_names]
+    columns = [ColumnNGFF(name=col_name) for col_name in col_names]
+
+    # Create WellInPlate objects for selected wells only
+    plate_wells = []
+    selected_indices = stage_positions.selected_well_indices
+    selected_names = stage_positions.selected_well_names
+
+    for i, (row_idx, col_idx) in enumerate(selected_indices):
+        well_name = selected_names[i]
+        # Split the well name like "A1" into row "A" and column "1"
+        row_name = well_name[0]  # First character is row
+        col_name = well_name[1:]  # Rest is column
+        well_path = f"{row_name}/{col_name}"
+
+        plate_wells.append(
+            WellInPlateNGFF(
+                path=well_path, rowIndex=int(row_idx), columnIndex=int(col_idx)
+            )
+        )
+
+    plate = PlateNGFF(
+        columns=columns,
+        rows=rows,
+        wells=plate_wells,
+        name=getattr(well_plate, "name", None),
+        version="0.5",
+    )
+
+    # Create wells dictionary
+    wells_dict = {}
+    selected_indices = stage_positions.selected_well_indices
+    selected_names = stage_positions.selected_well_names
+
+    for i, (_row_idx, _col_idx) in enumerate(selected_indices):
+        well_name = selected_names[i]
+        # Convert well name "A1" to well path "A/1"
+        row_name = well_name[0]  # First character is row
+        col_name = well_name[1:]  # Rest is column
+        well_path = f"{row_name}/{col_name}"
+
+        # Create WellImageNGFF for this position
+        images = [WellImageNGFF(path=str(i))]
+        wells_dict[well_path] = WellNGFF(images=images, version="0.5")
+
+    return plate, wells_dict
