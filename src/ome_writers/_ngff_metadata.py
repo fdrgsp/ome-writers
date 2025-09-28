@@ -4,11 +4,19 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from typing import Any
 
-    from ome_writers._dimensions import Dimension
+    from ome_writers.model import Dimension, Plate, Well
+
+from ome_writers.model._dimensions import dims_to_ngff_axes
 
 
-def ome_meta_v5(array_dims: Mapping[str, Sequence[Dimension]]) -> dict:
+def ome_meta_v5(
+    array_dims: Mapping[str, Sequence[Dimension]],
+    *,
+    plate: Plate | None = None,
+    well: Well | None = None,
+) -> dict:
     """Create OME NGFF v0.5 metadata.
 
     Parameters
@@ -17,6 +25,12 @@ def ome_meta_v5(array_dims: Mapping[str, Sequence[Dimension]]) -> dict:
         A mapping of array paths to their corresponding dimension information.
         Each key is the path to a zarr array, and the value is a sequence of
         DimensionInfo objects describing the dimensions of that array.
+    plate : Plate | None, optional
+        HCS plate metadata. If provided, plate metadata will be included
+        in the OME metadata following the OME-NGFF 0.5 specification.
+    well : Well | None, optional
+        HCS well metadata. If provided, well metadata will be included
+        in the OME metadata following the OME-NGFF 0.5 specification.
 
     Example
     -------
@@ -36,7 +50,7 @@ def ome_meta_v5(array_dims: Mapping[str, Sequence[Dimension]]) -> dict:
     multiscales: dict[str, dict] = {}
 
     for array_path, dims in array_dims.items():
-        axes, scales = _ome_axes_scales(dims)
+        axes, scales = dims_to_ngff_axes(dims)
         ct = {"scale": scales, "type": "scale"}
         ds = {"path": array_path, "coordinateTransformations": [ct]}
 
@@ -51,28 +65,74 @@ def ome_meta_v5(array_dims: Mapping[str, Sequence[Dimension]]) -> dict:
         # Add the dataset to the corresponding group
         multiscale["datasets"].append(ds)
 
-    attrs = {"ome": {"version": "0.5", "multiscales": list(multiscales.values())}}
+    # Build the base OME metadata
+    ome_attrs: dict[str, Any] = {
+        "version": "0.5",
+        "multiscales": list(multiscales.values()),
+    }
+
+    # Add HCS-specific metadata if provided
+    if plate is not None:
+        ome_attrs["plate"] = _plate_to_dict(plate)
+    if well is not None:
+        ome_attrs["well"] = _well_to_dict(well)
+
+    attrs = {"ome": ome_attrs}
     return attrs
 
 
-def _ome_axes_scales(dims: Sequence[Dimension]) -> tuple[list[dict], list[float]]:
-    """Return ome axes meta.
+def _plate_to_dict(plate: Plate) -> dict:
+    """Convert a Plate object to OME-NGFF 0.5 compliant dictionary."""
+    plate_dict = {
+        "columns": [{"name": col.name} for col in plate.columns],
+        "rows": [{"name": row.name} for row in plate.rows],
+        "wells": [
+            {
+                "path": well.path,
+                "rowIndex": well.rowIndex,
+                "columnIndex": well.columnIndex,
+            }
+            for well in plate.wells
+        ],
+        "version": plate.version,
+    }
 
-    The length of "axes" must be between 2 and 5 and MUST be equal to the
-    dimensionality of the zarr arrays storing the image data. The "axes" MUST
-    contain 2 or 3 entries of "type:space" and MAY contain one additional
-    entry of "type:time" and MAY contain one additional entry of
-    "type:channel" or a null / custom type. The order of the entries MUST
-    correspond to the order of dimensions of the zarr arrays. In addition, the
-    entries MUST be ordered by "type" where the "time" axis must come first
-    (if present), followed by the "channel" or custom axis (if present) and
-    the axes of type "space".
-    """
-    axes: list[dict] = []
-    scales: list[float] = []
-    for dim in dims:
-        axes.append(
-            {"name": dim.label, "type": dim.ome_dim_type, "unit": dim.ome_unit},
-        )
-        scales.append(dim.ome_scale)
-    return axes, scales
+    if plate.acquisitions is not None:
+        plate_dict["acquisitions"] = [
+            {
+                "id": acq.id,
+                **({} if acq.name is None else {"name": acq.name}),
+                **(
+                    {}
+                    if acq.maximumfieldcount is None
+                    else {"maximumfieldcount": acq.maximumfieldcount}
+                ),
+                **({} if acq.description is None else {"description": acq.description}),
+                **({} if acq.starttime is None else {"starttime": acq.starttime}),
+                **({} if acq.endtime is None else {"endtime": acq.endtime}),
+            }
+            for acq in plate.acquisitions
+        ]
+
+    if plate.field_count is not None:
+        plate_dict["field_count"] = plate.field_count
+
+    if plate.name is not None:
+        plate_dict["name"] = plate.name
+
+    return plate_dict
+
+
+def _well_to_dict(well: Well) -> dict:
+    """Convert a Well object to OME-NGFF 0.5 compliant dictionary."""
+    well_dict = {
+        "images": [
+            {
+                "path": img.path,
+                **({} if img.acquisition is None else {"acquisition": img.acquisition}),
+            }
+            for img in well.images
+        ],
+        "version": well.version,
+    }
+    return well_dict

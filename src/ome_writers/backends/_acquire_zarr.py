@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     import acquire_zarr
     import numpy as np
 
-    from ome_writers._dimensions import Dimension
+    from ome_writers.model import Dimension
 
 
 class AcquireZarrStream(MultiPositionOMEStream):

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-    from ._dimensions import Dimension
+    from .model import Dimension
 
 
 class OMEStream(abc.ABC):

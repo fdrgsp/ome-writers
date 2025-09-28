@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-    from ome_writers._dimensions import Dimension
+    from ome_writers.model import Dimension
 
 
 class TensorStoreZarrStream(MultiPositionOMEStream):

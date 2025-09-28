@@ -10,15 +10,15 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
-from ome_writers._dimensions import dims_to_ome
 from ome_writers._stream_base import MultiPositionOMEStream
+from ome_writers.model import dims_to_ome
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
     import numpy as np
 
-    from ome_writers._dimensions import Dimension
+    from ome_writers.model._dimensions import Dimension
 
 
 class TifffileStream(MultiPositionOMEStream):

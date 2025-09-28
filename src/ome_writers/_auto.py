@@ -16,8 +16,8 @@ if TYPE_CHECKING:
 
     from numpy.typing import DTypeLike
 
-    from ._dimensions import Dimension
     from ._stream_base import OMEStream
+    from .model import Dimension
 
 __all__ = ["create_stream", "init_stream"]
 
