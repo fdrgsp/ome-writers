@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
-from ome_writers._ngff_metadata import ome_meta_v5
+from ome_writers._ngff_metadata import ngff_meta_v5
 from ome_writers._stream_base import MultiPositionOMEStream
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     import acquire_zarr
     import numpy as np
 
-    from ome_writers.model import Dimension
+    from ome_writers.model import Dimension, PlateNGFF, WellNGFF
 
 
 class AcquireZarrStream(MultiPositionOMEStream):
@@ -47,11 +47,15 @@ class AcquireZarrStream(MultiPositionOMEStream):
         path: str,
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
+        plate: PlateNGFF | None = None,
+        wells: dict[str, WellNGFF] | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
-        # Use MultiPositionOMEStream to handle position logic
-        num_positions, non_position_dims = self._init_positions(dimensions)
+        # Use MultiPositionOMEStream to handle position logic with HCS support
+        _num_positions, non_position_dims = self._init_positions(
+            dimensions, plate=plate, wells=wells
+        )
         self._group_path = Path(self._normalize_path(path))
 
         # Check if directory exists and handle overwrite parameter
@@ -69,9 +73,16 @@ class AcquireZarrStream(MultiPositionOMEStream):
         self._az_dims_keepalive = az_dims
 
         # Create AcquireZarr array settings for each position
+        # Get the unique array keys that will be used
+        unique_array_keys = set()
+        for i in range(len(self._indices)):
+            array_key, _ = self._indices[i]
+            unique_array_keys.add(array_key)
+
+        # Create array settings using the actual array keys
         az_array_settings = [
-            self._aqz_pos_array(pos_idx, az_dims, dtype)
-            for pos_idx in range(num_positions)
+            self._aqz_pos_array(array_key, az_dims, dtype)
+            for array_key in unique_array_keys
         ]
 
         for arr in az_array_settings:
@@ -102,7 +113,22 @@ class AcquireZarrStream(MultiPositionOMEStream):
         manually constructed metadata.
         """
         dims = self._non_position_dims
-        attrs = ome_meta_v5({str(i): dims for i in range(self._num_positions)})
+        # Generate array metadata using proper array keys from HCS structure
+        array_meta = {}
+        unique_array_keys = set()
+        for i in range(len(self._indices)):
+            array_key, _ = self._indices[i]
+            unique_array_keys.add(array_key)
+
+        for array_key in unique_array_keys:
+            array_meta[array_key] = dims
+
+        # Create plate-level metadata
+        attrs = ngff_meta_v5(
+            array_meta,
+            plate=self._plate,
+            wells=self._wells,
+        )
         zarr_json = Path(self._group_path) / "zarr.json"
         current_meta: dict = {
             "consolidated_metadata": None,
@@ -116,6 +142,57 @@ class AcquireZarrStream(MultiPositionOMEStream):
 
         current_meta.setdefault("attributes", {}).update(attrs)
         zarr_json.write_text(json.dumps(current_meta, indent=2))
+
+        # Create well-level metadata files if this is HCS data
+        if self._is_hcs_data():
+            self._create_well_metadata_files(dims)
+
+    def _create_well_metadata_files(self, dims: Sequence[Dimension]) -> None:
+        """Create individual zarr.json metadata files for each well directory."""
+        # Group arrays by well path
+        well_arrays: dict[str, list[str]] = {}
+        for array_key in self._get_unique_array_keys():
+            # Extract well path from array key (e.g., "A/1/0" -> "A/1")
+            parts = array_key.split("/")
+            if len(parts) >= 2:
+                well_path = "/".join(parts[:2])  # "A/1"
+                well_arrays.setdefault(well_path, []).append(array_key)
+
+        # Create metadata file for each well
+        for well_path, array_keys in well_arrays.items():
+            well_metadata = self._wells.get(well_path)
+            if well_metadata is None:
+                continue
+
+            # Create array metadata for this well's arrays
+            well_array_meta = dict.fromkeys(array_keys, dims)
+
+            # Generate well-specific metadata
+            well_attrs = ngff_meta_v5(
+                well_array_meta,
+                plate=None,  # No plate metadata at well level
+                wells={well_path: well_metadata},  # Single well
+            )
+
+            # Write well metadata file
+            well_dir = Path(self._group_path) / well_path
+            well_dir.mkdir(parents=True, exist_ok=True)
+            well_zarr_json = well_dir / "zarr.json"
+
+            well_meta = {
+                "consolidated_metadata": None,
+                "node_type": "group",
+                "zarr_format": 3,
+                "attributes": well_attrs,
+            }
+            well_zarr_json.write_text(json.dumps(well_meta, indent=2))
+
+    def _get_unique_array_keys(self) -> set[str]:
+        """Get all unique array keys from the indices mapping."""
+        unique_keys = set()
+        for array_key, _ in self._indices.values():
+            unique_keys.add(array_key)
+        return unique_keys
 
     def _write_to_backend(
         self, array_key: str, index: tuple[int, ...], frame: np.ndarray
@@ -153,15 +230,13 @@ class AcquireZarrStream(MultiPositionOMEStream):
 
     def _aqz_pos_array(
         self,
-        position_index: int,
+        array_key: str,
         dimensions: list[acquire_zarr.Dimension],
         dtype: np.dtype,
     ) -> acquire_zarr.ArraySettings:
-        """Create an AcquireZarr ArraySettings for a position."""
+        """Create an AcquireZarr ArraySettings for an array key."""
         return self._aqz.ArraySettings(
-            output_key=str(
-                position_index
-            ),  # this matches the position index key from the base class
+            output_key=array_key,  # Use actual array key for appending
             dimensions=dimensions,
             data_type=dtype,
         )

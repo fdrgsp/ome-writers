@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-    from .model import Dimension
+    from .model import Dimension, PlateNGFF, WellNGFF
 
 
 class OMEStream(abc.ABC):
@@ -35,6 +35,8 @@ class OMEStream(abc.ABC):
         path: str,
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
+        plate: PlateNGFF | None = None,
+        wells: dict[str, WellNGFF] | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
@@ -48,6 +50,10 @@ class OMEStream(abc.ABC):
             NumPy data type for the image data.
         dimensions : Sequence[Dimension]
             Sequence of dimension information describing the data structure.
+        plate : Plate | None
+            Optional Plate information for plate-based acquisitions.
+        wells : dict[str, WellNGFF] | None
+            Optional wells dictionary for HCS acquisitions.
         overwrite : bool, optional
             Whether to overwrite existing files or directories. Default is False.
 
@@ -119,17 +125,36 @@ class MultiPositionOMEStream(OMEStream):
         # non-position dimensions
         # (e.g. time, z, c, y, x) that are not
         self._non_position_dims: Sequence[Dimension] = []
+        # HCS metadata for proper NGFF structure
+        self._plate: PlateNGFF | None = None
+        self._wells: dict[str, WellNGFF] = {}
 
     def _init_positions(
-        self, dimensions: Sequence[Dimension]
+        self,
+        dimensions: Sequence[Dimension],
+        plate: PlateNGFF | None = None,
+        wells: dict[str, WellNGFF] | None = None,
     ) -> tuple[int, Sequence[Dimension]]:
         """Initialize position tracking and return num_positions, non_position_dims.
+
+        Parameters
+        ----------
+        dimensions : Sequence[Dimension]
+            The dimension information.
+        plate : PlateNGFF | None
+            Optional plate metadata for HCS data.
+        wells : dict[str, WellNGFF] | None
+            Optional wells dictionary mapping well paths to well metadata.
 
         Returns
         -------
         tuple[int, Sequence[Dimension]]
             The number of positions and the non-position dimensions.
         """
+        # Store HCS metadata
+        self._plate = plate
+        self._wells = wells or {}
+
         # Separate position dimension from other dimensions
         position_dims = [d for d in dimensions if d.label == "p"]
         non_position_dims = [d for d in dimensions if d.label != "p"]
@@ -138,12 +163,55 @@ class MultiPositionOMEStream(OMEStream):
         range_iter = enumerate(product(range(num_positions), *non_p_ranges))
 
         self._position_dim = position_dims[0] if position_dims else None
-        self._indices = {i: (str(pos), tuple(idx)) for i, (pos, *idx) in range_iter}
+
+        # Create position mapping: for HCS use well paths, otherwise use simple indices
+        if self._is_hcs_data():
+            # Map position indices to well paths for HCS data with multi-FOV support
+            self._indices = {}
+            for i, (pos, *idx) in range_iter:
+                array_key = self._get_hcs_array_key(pos)
+                self._indices[i] = (array_key, tuple(idx))
+        else:
+            # Use simple position indices for non-HCS data
+            self._indices = {i: (str(pos), tuple(idx)) for i, (pos, *idx) in range_iter}
+
         self._append_count = 0
         self._num_positions = num_positions
         self._non_position_dims = non_position_dims
 
         return num_positions, non_position_dims
+
+    def _is_hcs_data(self) -> bool:
+        """Check if this is HCS data (has both plate and wells metadata)."""
+        return self._plate is not None and bool(self._wells)
+
+    def _get_hcs_array_key(self, position_idx: int) -> str:
+        """Get the array key for HCS data with multi-FOV support.
+
+        For HCS data, returns well_path/field_idx (e.g., "A/1/0", "A/1/1").
+        Position indices map to wells and fields based on the wells metadata.
+        """
+        # Calculate fields per well from wells metadata
+        well_paths = list(self._wells.keys())
+        if not well_paths:
+            return str(position_idx)
+
+        # Get the number of fields for each well
+        fields_per_well = {}
+        for well_path, well_meta in self._wells.items():
+            fields_per_well[well_path] = len(well_meta.images)
+
+        # Find which well and field this position maps to
+        current_pos = 0
+        for well_path in well_paths:
+            num_fields = fields_per_well[well_path]
+            if position_idx < current_pos + num_fields:
+                field_idx = position_idx - current_pos
+                return f"{well_path}/{field_idx}"
+            current_pos += num_fields
+
+        # Fallback to simple index if mapping fails
+        return str(position_idx)
 
     @abstractmethod
     def _write_to_backend(
