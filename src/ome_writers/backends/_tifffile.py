@@ -57,6 +57,14 @@ class TifffileStream(MultiPositionOMEStream):
         self._queues: dict[int, Queue[np.ndarray | None]] = {}
         self._is_active = False
 
+    def _get_hcs_array_key(self, position_idx: int) -> str:
+        """Override HCS array key for TIFF backend.
+
+        TIFF backend always uses simple position indices since each
+        position creates a separate file, regardless of HCS structure.
+        """
+        return str(position_idx)
+
     def create(
         self,
         path: str,
