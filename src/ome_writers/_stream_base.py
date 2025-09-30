@@ -207,6 +207,7 @@ class MultiPositionOMEStream(OMEStream):
             return wells_dict
 
         # Calculate fields per well (distribute positions evenly across wells)
+        # TODO: find a better way, can we have different number of fields per well?
         fields_per_well = num_positions // num_wells
         remaining_positions = num_positions % num_wells
 
