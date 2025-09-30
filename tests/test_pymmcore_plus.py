@@ -79,14 +79,13 @@ class PYMMCP:
         def _on_sequence_started(
             sequence: useq.MDASequence, summary_meta: SummaryMetaV1
         ) -> None:
-            plate, wells = omew.ngff_plate_and_wells_from_useq(self._seq)
+            plate, _ = omew.ngff_plate_and_wells_from_useq(self._seq)
             self._stream = omew.create_stream(
                 self._dest,
                 dimensions=omew.dims_from_useq(
                     self._seq, core.getImageWidth(), core.getImageHeight()
                 ),
                 plate=plate,
-                wells=wells,
                 dtype=np.uint16,
                 overwrite=True,
                 backend=cast("omew.BackendName", self._backend),

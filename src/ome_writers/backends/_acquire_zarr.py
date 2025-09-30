@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     import acquire_zarr
     import numpy as np
 
-    from ome_writers.model import Dimension, PlateNGFF, WellNGFF
+    from ome_writers.model import Dimension, PlateNGFF
 
 
 class AcquireZarrStream(MultiPositionOMEStream):
@@ -48,13 +48,12 @@ class AcquireZarrStream(MultiPositionOMEStream):
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
         plate: PlateNGFF | None = None,
-        wells: dict[str, WellNGFF] | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic with HCS support
         _num_positions, non_position_dims = self._init_positions(
-            dimensions, plate=plate, wells=wells
+            dimensions, plate=plate
         )
         self._group_path = Path(self._normalize_path(path))
 
@@ -127,7 +126,6 @@ class AcquireZarrStream(MultiPositionOMEStream):
         attrs = ngff_meta_v5(
             array_meta,
             plate=self._plate,
-            wells=self._wells,
         )
         zarr_json = Path(self._group_path) / "zarr.json"
         current_meta: dict = {
@@ -171,7 +169,6 @@ class AcquireZarrStream(MultiPositionOMEStream):
             well_attrs = ngff_meta_v5(
                 well_array_meta,
                 plate=None,  # No plate metadata at well level
-                wells={well_path: well_metadata},  # Single well
             )
 
             # Write well metadata file

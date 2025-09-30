@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from typing import Any
 
-    from ome_writers.model import Dimension, PlateNGFF, WellNGFF
+    from ome_writers.model import Dimension, PlateNGFF
 
 from ome_writers.model import dims_to_ngff_axes
 
@@ -14,7 +14,6 @@ from ome_writers.model import dims_to_ngff_axes
 def ngff_meta_v5(
     array_dims: Mapping[str, Sequence[Dimension]],
     plate: PlateNGFF | None = None,
-    wells: dict[str, WellNGFF] | None = None,
 ) -> dict:
     """Create OME NGFF v0.5 metadata.
 
@@ -24,13 +23,9 @@ def ngff_meta_v5(
         A mapping of array paths to their corresponding dimension information.
         Each key is the path to a zarr array, and the value is a sequence of
         DimensionInfo objects describing the dimensions of that array.
-    plate : Plate | None, optional
+    plate : PlateNGFF | None, optional
         HCS plate metadata. If provided, plate metadata will be included
         in the OME metadata following the OME-NGFF 0.5 specification.
-    wells : dict[str, WellNGFF] | None, optional
-        HCS wells metadata dictionary mapping well paths to WellNGFF objects.
-        If provided, well metadata will be included in the OME metadata
-        following the OME-NGFF 0.5 specification.
 
     Example
     -------
@@ -74,20 +69,6 @@ def ngff_meta_v5(
     # Add HCS-specific metadata if provided
     if plate is not None:
         ome_attrs["plate"] = _plate_to_dict(plate)
-
-    # Add well metadata when wells are provided and not empty
-    if wells is not None and wells:
-        # If we have multiple wells, this is typically plate-level metadata
-        # and wells are referenced in the plate metadata structure
-        if len(wells) > 1:
-            # Multiple wells: enhance plate metadata with well information
-            # The individual well paths are already included in the plate.wells
-            pass  # Plate metadata already includes well references
-        else:
-            # Single well: add well-specific metadata to ome attributes
-            # This is for cases where we're generating metadata for a specific well
-            _, well_metadata = next(iter(wells.items()))
-            ome_attrs["well"] = _well_to_dict(well_metadata)
 
     attrs = {"ome": ome_attrs}
     return attrs
@@ -133,18 +114,3 @@ def _plate_to_dict(plate: PlateNGFF) -> dict:
         plate_dict["name"] = plate.name
 
     return plate_dict
-
-
-def _well_to_dict(well: WellNGFF) -> dict:
-    """Convert a Well object to OME-NGFF 0.5 compliant dictionary."""
-    well_dict = {
-        "images": [
-            {
-                "path": img.path,
-                **({} if img.acquisition is None else {"acquisition": img.acquisition}),
-            }
-            for img in well.images
-        ],
-        "version": well.version,
-    }
-    return well_dict

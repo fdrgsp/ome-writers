@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-    from ome_writers._ngff_metadata import PlateNGFF, WellNGFF
+    from ome_writers._ngff_metadata import PlateNGFF
     from ome_writers.model import Dimension
 
 
@@ -48,13 +48,12 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
         plate: PlateNGFF | None = None,
-        wells: dict[str, WellNGFF] | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic with HCS support
         _, non_position_dims = self._init_positions(
-            dimensions, plate=plate, wells=wells
+            dimensions, plate=plate
         )
         self._delete_existing = overwrite
 
@@ -164,7 +163,6 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
             "attributes": ngff_meta_v5(
                 array_dims=array_dims,
                 plate=self._plate,
-                wells=self._wells,  # Pass the wells dictionary for HCS support
             ),
         }
         group_zarr.write_text(json.dumps(group_meta, indent=2))
@@ -197,7 +195,6 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
             well_attrs = ngff_meta_v5(
                 well_array_meta,
                 plate=None,  # No plate metadata at well level
-                wells={well_path: well_metadata},  # Single well
             )
 
             # Write well metadata file

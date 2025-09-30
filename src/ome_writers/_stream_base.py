@@ -36,7 +36,6 @@ class OMEStream(abc.ABC):
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
         plate: PlateNGFF | None = None,
-        wells: dict[str, WellNGFF] | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
@@ -50,10 +49,8 @@ class OMEStream(abc.ABC):
             NumPy data type for the image data.
         dimensions : Sequence[Dimension]
             Sequence of dimension information describing the data structure.
-        plate : Plate | None
+        plate : PlateNGFF | None
             Optional Plate information for plate-based acquisitions.
-        wells : dict[str, WellNGFF] | None
-            Optional wells dictionary for HCS acquisitions.
         overwrite : bool, optional
             Whether to overwrite existing files or directories. Default is False.
 
@@ -133,7 +130,6 @@ class MultiPositionOMEStream(OMEStream):
         self,
         dimensions: Sequence[Dimension],
         plate: PlateNGFF | None = None,
-        wells: dict[str, WellNGFF] | None = None,
     ) -> tuple[int, Sequence[Dimension]]:
         """Initialize position tracking and return num_positions, non_position_dims.
 
@@ -143,22 +139,23 @@ class MultiPositionOMEStream(OMEStream):
             The dimension information.
         plate : PlateNGFF | None
             Optional plate metadata for HCS data.
-        wells : dict[str, WellNGFF] | None
-            Optional wells dictionary mapping well paths to well metadata.
 
         Returns
         -------
         tuple[int, Sequence[Dimension]]
             The number of positions and the non-position dimensions.
         """
-        # Store HCS metadata
-        self._plate = plate
-        self._wells = wells or {}
-
         # Separate position dimension from other dimensions
         position_dims = [d for d in dimensions if d.label == "p"]
         non_position_dims = [d for d in dimensions if d.label != "p"]
         num_positions = position_dims[0].size if position_dims else 1
+
+        # Store HCS metadata
+        self._plate = plate
+        if plate:
+            self._wells = self._extract_wells_from_plate(plate, num_positions)
+        else:
+            self._wells = {}
         non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
         range_iter = enumerate(product(range(num_positions), *non_p_ranges))
 
@@ -180,6 +177,54 @@ class MultiPositionOMEStream(OMEStream):
         self._non_position_dims = non_position_dims
 
         return num_positions, non_position_dims
+
+    def _extract_wells_from_plate(
+        self, plate: PlateNGFF, num_positions: int
+    ) -> dict[str, WellNGFF]:
+        """Extract wells dictionary from plate metadata.
+
+        This creates a wells dictionary properly distributing positions/FOVs
+        across all wells in the plate.
+
+        Parameters
+        ----------
+        plate : PlateNGFF
+            The plate metadata containing well information.
+        num_positions : int
+            Total number of positions in the acquisition.
+
+        Returns
+        -------
+        dict[str, WellNGFF]
+            Dictionary mapping well paths to well metadata.
+        """
+        from .model._hcs import WellImageNGFF, WellNGFF
+
+        wells_dict = {}
+        num_wells = len(plate.wells)
+
+        if num_wells == 0:
+            return wells_dict
+
+        # Calculate fields per well (distribute positions evenly across wells)
+        fields_per_well = num_positions // num_wells
+        remaining_positions = num_positions % num_wells
+
+        current_field_idx = 0
+        for i, well_in_plate in enumerate(plate.wells):
+            # Some wells get an extra field if positions don't divide evenly
+            extra_field = 1 if i < remaining_positions else 0
+            num_fields_this_well = fields_per_well + extra_field
+
+            # Create WellImageNGFF for each field in this well
+            images = []
+            for _ in range(num_fields_this_well):
+                images.append(WellImageNGFF(path=str(current_field_idx)))
+                current_field_idx += 1
+
+            wells_dict[well_in_plate.path] = WellNGFF(images=images, version="0.5")
+
+        return wells_dict
 
     def _is_hcs_data(self) -> bool:
         """Check if this is HCS data (has both plate and wells metadata)."""

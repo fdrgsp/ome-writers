@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     import numpy as np
 
-    from ome_writers.model import PlateNGFF, WellNGFF
+    from ome_writers.model import PlateNGFF
     from ome_writers.model._dimensions import Dimension
 
 
@@ -63,14 +63,12 @@ class TifffileStream(MultiPositionOMEStream):
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
         plate: PlateNGFF | None = None,
-        well: WellNGFF | None = None,
-        wells: dict[str, WellNGFF] | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic with HCS support
         num_positions, tczyx_dims = self._init_positions(
-            dimensions, plate=plate, wells=wells
+            dimensions, plate=plate
         )
         self._delete_existing = overwrite
         self._path = Path(self._normalize_path(path))

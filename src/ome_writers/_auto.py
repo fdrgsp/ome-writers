@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from numpy.typing import DTypeLike
 
     from ._stream_base import OMEStream
-    from .model import Dimension, PlateNGFF, WellNGFF
+    from .model import Dimension, PlateNGFF
 
 __all__ = ["create_stream", "init_stream"]
 
@@ -71,7 +71,6 @@ def create_stream(
     dtype: DTypeLike,
     dimensions: Sequence[Dimension],
     plate: PlateNGFF | None = None,
-    wells: dict[str, WellNGFF] | None = None,
     *,
     backend: Literal[BackendName, "auto"] = "auto",
     overwrite: bool = False,
@@ -88,8 +87,6 @@ def create_stream(
         Sequence of dimension information describing the data structure.
     plate : PlateNGFF | None, optional
         HCS plate metadata for multi-well experiments.
-    wells : dict[str, WellNGFF] | None, optional
-        Dictionary mapping well paths to well metadata (for HCS experiments).
     backend : Literal["acquire-zarr", "tensorstore", "tiff", "auto"], optional
         The backend to use for writing the data. Options are:
 
@@ -113,7 +110,6 @@ def create_stream(
         np.dtype(dtype),
         dimensions,
         plate=plate,
-        wells=wells,
         overwrite=overwrite,
     )
 
