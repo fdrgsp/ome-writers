@@ -113,7 +113,8 @@ class PYMMCP:
         self._core.mda.run(self._seq)
 
 
-def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
+# def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
+def test_pymmcore_plus_mda_tiff_metadata_update() -> None:
     """Test pymmcore_plus MDA with metadata update after acquisition."""
 
     # skip if tifffile or ome-types is not installed
@@ -137,6 +138,8 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
+    from pathlib import Path
+    tmp_path = Path("/Users/fdrgsp/Desktop/t")
     dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
 
     pymm = PYMMCP(seq, core, dest)
@@ -151,3 +154,8 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
                 ome = from_xml(ome_xml)
                 # assert there is plate information
                 assert ome.plates
+
+                from rich import print
+                print("-----" * 50)
+                print(ome_xml)
+                print("-----" * 50)

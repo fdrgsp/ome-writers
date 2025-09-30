@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import threading
+import uuid
 import warnings
 from contextlib import suppress
 from itertools import count
@@ -70,6 +71,9 @@ class TifffileStream(MultiPositionOMEStream):
         # Using dictionaries to handle multi-position ('p') acquisitions
         self._threads: dict[int, WriterThread] = {}
         self._queues: dict[int, Queue[np.ndarray | None]] = {}
+        # Store UUIDs for each file for multi-file OME-TIFF compliance
+        self._file_uuids: dict[int, str] = {}
+        self._file_names: dict[int, str] = {}
         self._is_active = False
 
     # ------------------------PUBLIC METHODS------------------------ #
@@ -89,6 +93,11 @@ class TifffileStream(MultiPositionOMEStream):
         shape_5d = tuple(d.size for d in tczyx_dims)
 
         fnames = self._prepare_files(self._path, num_positions, overwrite)
+
+        # Generate unique UUIDs for each file
+        for p_idx, fname in enumerate(fnames):
+            self._file_uuids[p_idx] = f"urn:uuid:{uuid.uuid4()}"
+            self._file_names[p_idx] = Path(fname).name
 
         # Create a memmap for each position
         for p_idx, fname in enumerate(fnames):
@@ -186,7 +195,11 @@ class TifffileStream(MultiPositionOMEStream):
         self._queues[int(array_key)].put(frame)
 
     def _update_position_metadata(self, position_idx: int, metadata: ome.OME) -> None:
-        """Add OME metadata to TIFF file efficiently without rewriting image data."""
+        """Add OME metadata to TIFF file with multi-file OME-TIFF compliance.
+
+        For multi-file OME-TIFF, each file contains the complete OME-XML metadata
+        with TiffData elements referencing all files via UUID.
+        """
         thread = self._threads[position_idx]
         if not Path(thread._path).exists():  # pragma: no cover
             warnings.warn(
@@ -197,13 +210,16 @@ class TifffileStream(MultiPositionOMEStream):
             return
 
         try:
-            position_ome = _create_position_specific_ome(position_idx, metadata)
+            # Create complete multi-file OME metadata for this file
+            file_ome = _create_multifile_ome_metadata(
+                position_idx, metadata, self._file_uuids, self._file_names
+            )
             # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
             # requires ASCII strings
-            ascii_xml = position_ome.to_xml().replace("µ", "&#x00B5;").encode("ascii")
+            ascii_xml = file_ome.to_xml().replace("µ", "&#x00B5;").encode("ascii")
         except Exception as e:
             raise RuntimeError(
-                f"Failed to create position-specific OME metadata for position "
+                f"Failed to create multi-file OME metadata for position "
                 f"{position_idx}. {e}"
             ) from e
 
@@ -342,3 +358,98 @@ def _create_position_plate(
     well_dict["well_samples"] = [target_sample]
     plate_dict["wells"] = [well_dict]
     return ome.Plate.model_validate(plate_dict)
+
+
+def _create_multifile_ome_metadata(
+    current_position_idx: int,
+    metadata: ome.OME,
+    file_uuids: dict[int, str],
+    file_names: dict[int, str],
+) -> ome.OME:
+    """Create complete multi-file OME metadata for a specific file.
+
+    Each file in a multi-file OME-TIFF dataset contains the complete OME-XML
+    metadata with TiffData elements that reference all files using UUID child
+    elements, as required by the OME-TIFF specification.
+
+    Parameters
+    ----------
+    current_position_idx : int
+        The position index of the current file being written
+    metadata : ome.OME
+        The complete OME metadata for the entire dataset
+    file_uuids : dict[int, str]
+        Mapping of position index to UUID for each file
+    file_names : dict[int, str]
+        Mapping of position index to filename for each file
+
+    Returns
+    -------
+    ome.OME
+        Complete OME metadata with proper multi-file TiffData references
+    """
+    # Create a copy of the complete metadata but with the current file's UUID
+    current_uuid = file_uuids[current_position_idx]
+
+    # Create TiffData elements for all images with proper UUID references
+    updated_images = []
+    for image in metadata.images:
+        # Extract position index from image ID (assumes format "Image:{position_idx}")
+        try:
+            img_position_idx = int(image.id.split(":")[-1])
+        except (ValueError, IndexError):
+            # Fallback if image ID doesn't follow expected format
+            img_position_idx = 0
+
+        # Create TiffData with UUID reference to the appropriate file
+        target_uuid = file_uuids.get(img_position_idx, current_uuid)
+        target_filename = file_names.get(
+            img_position_idx, file_names[current_position_idx]
+        )
+
+        # Create new TiffData elements for this image
+        tiff_data_list = []
+        if image.pixels and image.pixels.tiff_data_blocks:
+            for tiff_data in image.pixels.tiff_data_blocks:
+                new_tiff_data = ome.TiffData(
+                    ifd=tiff_data.ifd,
+                    first_c=tiff_data.first_c,
+                    first_t=tiff_data.first_t,
+                    first_z=tiff_data.first_z,
+                    plane_count=tiff_data.plane_count,
+                    uuid=ome.TiffData.UUID(
+                        value=target_uuid, file_name=target_filename
+                    ),
+                )
+                tiff_data_list.append(new_tiff_data)
+
+        # Create updated image with new TiffData
+        if image.pixels:
+            updated_pixels = ome.Pixels(
+                id=image.pixels.id,
+                dimension_order=image.pixels.dimension_order,
+                type=image.pixels.type,
+                size_x=image.pixels.size_x,
+                size_y=image.pixels.size_y,
+                size_z=image.pixels.size_z,
+                size_c=image.pixels.size_c,
+                size_t=image.pixels.size_t,
+                channels=image.pixels.channels,
+                tiff_data_blocks=tiff_data_list,
+                planes=image.pixels.planes,
+            )
+
+            updated_image = ome.Image(
+                id=image.id,
+                name=image.name,
+                pixels=updated_pixels,
+            )
+            updated_images.append(updated_image)
+
+    # Return complete OME metadata with current file's UUID and all cross-references
+    return ome.OME(
+        uuid=current_uuid,
+        images=updated_images,
+        instruments=metadata.instruments,
+        plates=metadata.plates,
+    )
