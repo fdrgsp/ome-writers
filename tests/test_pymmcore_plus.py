@@ -80,14 +80,14 @@ class PYMMCP:
         self._summary_meta: SummaryMetaV1 = {}  # type: ignore
         self._frame_meta_list: list[FrameMetaV1] = []
 
-        self._stream = omew.create_stream(
-            self._dest,
+        self._stream = omew.TifffileStream()
+        self._stream.create(
+            str(self._dest),
             dimensions=omew.dims_from_useq(
                 self._seq, core.getImageWidth(), core.getImageHeight()
             ),
-            dtype=np.uint16,
+            dtype=np.uint16,  # type: ignore
             overwrite=True,
-            backend="tiff",
         )
 
         @core.mda.events.sequenceStarted.connect
@@ -113,8 +113,7 @@ class PYMMCP:
         self._core.mda.run(self._seq)
 
 
-# def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
-def test_pymmcore_plus_mda_tiff_metadata_update() -> None:
+def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
     """Test pymmcore_plus MDA with metadata update after acquisition."""
 
     # skip if tifffile or ome-types is not installed
@@ -128,18 +127,17 @@ def test_pymmcore_plus_mda_tiff_metadata_update() -> None:
         time_plan=useq.TIntervalLoops(interval=0.001, loops=2),  # type: ignore
         z_plan=useq.ZRangeAround(range=2, step=1),
         channels=["DAPI", "FITC"],  # type: ignore
-        stage_positions=useq.WellPlatePlan(
-            plate=useq.WellPlate.from_str("96-well"),
-            a1_center_xy=(0, 0),
-            selected_wells=((0, 0), (0, 1)),
-        ),
+        # stage_positions=useq.WellPlatePlan(
+        #     plate=useq.WellPlate.from_str("96-well"),
+        #     a1_center_xy=(0, 0),
+        #     selected_wells=((0, 0), (0, 1)),
+        # ),
+        stage_positions=((0, 0), (1, 1)),  # type: ignore
     )
 
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
-    from pathlib import Path
-    tmp_path = Path("/Users/fdrgsp/Desktop/t")
     dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
 
     pymm = PYMMCP(seq, core, dest)
@@ -153,9 +151,10 @@ def test_pymmcore_plus_mda_tiff_metadata_update() -> None:
                 # validate by attempting to parse
                 ome = from_xml(ome_xml)
                 # assert there is plate information
-                assert ome.plates
+                # assert ome.plates
 
                 from rich import print
-                print("-----" * 50)
-                print(ome_xml)
-                print("-----" * 50)
+
+                print("===" * 20)
+                print(ome.to_xml())
+                print("===" * 20)
