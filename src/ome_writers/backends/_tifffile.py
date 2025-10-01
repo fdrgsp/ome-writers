@@ -298,68 +298,6 @@ thread_counter = count()
 # helpers for position-specific OME metadata updates
 
 
-def _create_position_specific_ome(position_idx: int, metadata: ome.OME) -> ome.OME:
-    """Create OME metadata for a specific position from complete metadata.
-
-    Extracts only the Image and related metadata for the given position index.
-    Assumes Image IDs follow the pattern "Image:{position_idx}".
-    """
-    target_image_id = f"Image:{position_idx}"
-
-    # Find an image by its ID in the given list of images
-    # will raise StopIteration if not found (caller should catch error)
-    position_image = next(img for img in metadata.images if img.id == target_image_id)
-    position_plates = _extract_position_plates(metadata, target_image_id)
-
-    return ome.OME(
-        uuid=metadata.uuid,
-        images=[position_image],
-        instruments=metadata.instruments,
-        plates=position_plates,
-    )
-
-
-def _extract_position_plates(ome: ome.OME, target_image_id: str) -> list[ome.Plate]:
-    """Extract plate metadata for a specific image ID.
-
-    Searches through plates to find the well sample referencing the target
-    image ID and returns a plate containing only the relevant well and sample.
-    """
-    for plate in ome.plates:
-        for well in plate.wells:
-            if _well_contains_image(well, target_image_id):
-                return [_create_position_plate(plate, well, target_image_id)]
-
-    return []
-
-
-def _well_contains_image(well: ome.Well, target_image_id: str) -> bool:
-    """Check if a well contains a sample referencing the target image ID."""
-    return any(
-        sample.image_ref and sample.image_ref.id == target_image_id
-        for sample in well.well_samples
-    )
-
-
-def _create_position_plate(
-    original_plate: ome.Plate, well: ome.Well, target_image_id: str
-) -> ome.Plate:
-    """Create a new plate containing only the relevant well and sample."""
-    # Find the specific well sample for this image
-    target_sample = next(
-        sample
-        for sample in well.well_samples
-        if sample.image_ref and sample.image_ref.id == target_image_id
-    )
-
-    # Create new plate with only the relevant well and sample
-    plate_dict = original_plate.model_dump()
-    well_dict = well.model_dump()
-    well_dict["well_samples"] = [target_sample]
-    plate_dict["wells"] = [well_dict]
-    return ome.Plate.model_validate(plate_dict)
-
-
 def _create_multifile_ome_metadata(
     current_position_idx: int,
     metadata: ome.OME,
