@@ -110,14 +110,18 @@ class MultiPositionOMEStream(OMEStream):
     def __init__(self) -> None:
         # dimension info for position dimension, if any
         self._position_dim: Dimension | None = None
+        # dimension info for grid dimension, if any
+        self._grid_dim: Dimension | None = None
         # A mapping of indices to (array_key, non-position index)
         self._indices: dict[int, tuple[str, tuple[int, ...]]] = {}
         # number of times append() has been called
         self._append_count = 0
         # number of positions in the stream
         self._num_positions = 0
+        # number of grids in the stream
+        self._num_grids = 0
         # non-position dimensions
-        # (e.g. time, z, c, y, x) that are not
+        # (e.g. time, z, c, y, x) that are not position or grid
         self._non_position_dims: Sequence[Dimension] = []
 
     def _init_positions(
@@ -130,17 +134,65 @@ class MultiPositionOMEStream(OMEStream):
         tuple[int, Sequence[Dimension]]
             The number of positions and the non-position dimensions.
         """
-        # Separate position dimension from other dimensions
+        # Separate position and grid dimensions from other dimensions
         position_dims = [d for d in dimensions if d.label == "p"]
-        non_position_dims = [d for d in dimensions if d.label != "p"]
+        grid_dims = [d for d in dimensions if d.label == "g"]
+        non_position_dims = [d for d in dimensions if d.label not in ("p", "g")]
+
         num_positions = position_dims[0].size if position_dims else 1
+        num_grids = grid_dims[0].size if grid_dims else 1
+
+        # Create ranges for all non-spatial dimensions (excluding y, x)
         non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
-        range_iter = enumerate(product(range(num_positions), *non_p_ranges))
+
+        # Create the cartesian product for all combinations
+        # When both p and g exist: (pos, grid, other_dims)
+        # When only p exists: (pos, other_dims)
+        # When only g exists: (grid, other_dims)
+        # When neither exists: (other_dims)
+        if position_dims and grid_dims:
+            range_iter = enumerate(product(
+                range(num_positions),
+                range(num_grids),
+                *non_p_ranges
+            ))
+        elif position_dims:
+            range_iter = enumerate(product(
+                range(num_positions),
+                *non_p_ranges
+            ))
+        elif grid_dims:
+            range_iter = enumerate(product(
+                range(num_grids),
+                *non_p_ranges
+            ))
+        else:
+            range_iter = enumerate(product(*non_p_ranges))
 
         self._position_dim = position_dims[0] if position_dims else None
-        self._indices = {i: (str(pos), tuple(idx)) for i, (pos, *idx) in range_iter}
+        self._grid_dim = grid_dims[0] if grid_dims else None
+
+        # Create array keys with format "_p000_g_000" or "0" for backward compatibility
+        self._indices = {}
+        for i, values in range_iter:
+            if position_dims and grid_dims:
+                pos, grid, *idx = values
+                array_key = f"_p{pos:03d}_g_{grid:03d}"
+            elif position_dims:
+                pos, *idx = values
+                array_key = str(pos)
+            elif grid_dims:
+                grid, *idx = values
+                array_key = f"_g_{grid:03d}"
+            else:
+                idx = list(values) if values else []
+                array_key = "0"
+            self._indices[i] = (array_key, tuple(idx))
+
         self._append_count = 0
         self._num_positions = num_positions
+        # Store actual grid count for tracking (0 if no grid dimension)
+        self._num_grids = grid_dims[0].size if grid_dims else 0
         self._non_position_dims = non_position_dims
 
         return num_positions, non_position_dims

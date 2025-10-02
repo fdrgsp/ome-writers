@@ -51,7 +51,7 @@ class AcquireZarrStream(MultiPositionOMEStream):
         overwrite: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic
-        num_positions, non_position_dims = self._init_positions(dimensions)
+        _, non_position_dims = self._init_positions(dimensions)
         self._group_path = Path(self._normalize_path(path))
 
         # Check if directory exists and handle overwrite parameter
@@ -68,10 +68,11 @@ class AcquireZarrStream(MultiPositionOMEStream):
         # keep a strong reference (avoid segfaults)
         self._az_dims_keepalive = az_dims
 
-        # Create AcquireZarr array settings for each position
+        # Create AcquireZarr array settings for each unique array key
+        unique_array_keys = {key for key, _ in self._indices.values()}
         az_array_settings = [
-            self._aqz_pos_array(pos_idx, az_dims, dtype)
-            for pos_idx in range(num_positions)
+            self._aqz_pos_array(array_key, az_dims, dtype)
+            for array_key in sorted(unique_array_keys)
         ]
 
         for arr in az_array_settings:
@@ -153,15 +154,13 @@ class AcquireZarrStream(MultiPositionOMEStream):
 
     def _aqz_pos_array(
         self,
-        position_index: int,
+        array_key: str,
         dimensions: list[acquire_zarr.Dimension],
         dtype: np.dtype,
     ) -> acquire_zarr.ArraySettings:
-        """Create an AcquireZarr ArraySettings for a position."""
+        """Create an AcquireZarr ArraySettings for an array key."""
         return self._aqz.ArraySettings(
-            output_key=str(
-                position_index
-            ),  # this matches the position index key from the base class
+            output_key=array_key,  # use the array key from the base class
             dimensions=dimensions,
             data_type=dtype,
         )

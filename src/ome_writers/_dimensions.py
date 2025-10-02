@@ -18,7 +18,7 @@ OME_UNIT = {"um": "micrometer", "ml": "milliliter", "s": "second", None: "unknow
 
 
 # Recognized dimension labels
-DimensionLabel: TypeAlias = Literal["x", "y", "z", "t", "c", "p", "other"]
+DimensionLabel: TypeAlias = Literal["x", "y", "z", "t", "c", "p", "g", "other"]
 # UnitTuple is a tuple of (scale, unit); e.g. (1, "s")
 UnitTuple: TypeAlias = tuple[float, str]
 

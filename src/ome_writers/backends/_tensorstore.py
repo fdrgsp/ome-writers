@@ -50,14 +50,14 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         overwrite: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic
-        num_positions, non_position_dims = self._init_positions(dimensions)
+        _, non_position_dims = self._init_positions(dimensions)
         self._delete_existing = overwrite
 
         self._create_group(self._normalize_path(path), dimensions)
 
-        # Create stores for each array
-        for pos_idx in range(num_positions):
-            array_key = str(pos_idx)
+        # Create stores for each unique array key
+        unique_array_keys = {key for key, _ in self._indices.values()}
+        for array_key in sorted(unique_array_keys):
             spec = self._create_spec(dtype, non_position_dims, array_key)
             try:
                 self._stores[array_key] = self._ts.open(spec).result()

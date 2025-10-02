@@ -67,9 +67,9 @@ class TifffileStream(MultiPositionOMEStream):
 
         self._tf = tifffile
         self._ome = ome_types.model
-        # Using dictionaries to handle multi-position ('p') acquisitions
-        self._threads: dict[int, WriterThread] = {}
-        self._queues: dict[int, Queue[np.ndarray | None]] = {}
+        # Using dictionaries to handle multi-position ('p') and grid ('g') acquisitions
+        self._threads: dict[str, WriterThread] = {}
+        self._queues: dict[str, Queue[np.ndarray | None]] = {}
         self._is_active = False
 
     # ------------------------PUBLIC METHODS------------------------ #
@@ -83,18 +83,20 @@ class TifffileStream(MultiPositionOMEStream):
         overwrite: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic
-        num_positions, tczyx_dims = self._init_positions(dimensions)
+        _, tczyx_dims = self._init_positions(dimensions)
         self._delete_existing = overwrite
         self._path = Path(self._normalize_path(path))
         shape_5d = tuple(d.size for d in tczyx_dims)
 
-        fnames = self._prepare_files(self._path, num_positions, overwrite)
+        # Get unique array keys and prepare files
+        unique_array_keys = {key for key, _ in self._indices.values()}
+        fnames = self._prepare_files(self._path, sorted(unique_array_keys), overwrite)
 
-        # Create a memmap for each position
-        for p_idx, fname in enumerate(fnames):
+        # Create a memmap for each array key
+        for array_key, fname in zip(sorted(unique_array_keys), fnames, strict=True):
             ome = dims_to_ome(tczyx_dims, dtype=dtype, tiff_file_name=fname)
-            self._queues[p_idx] = q = Queue()  # type: ignore
-            self._threads[p_idx] = thread = WriterThread(
+            self._queues[array_key] = q = Queue()  # type: ignore
+            self._threads[array_key] = thread = WriterThread(
                 fname,
                 shape=shape_5d,
                 dtype=dtype,
@@ -139,13 +141,13 @@ class TifffileStream(MultiPositionOMEStream):
         if not isinstance(metadata, self._ome.OME):  # pragma: no cover
             raise TypeError(f"Expected OME metadata, got {type(metadata)}")
 
-        for position_idx in self._threads:
-            self._update_position_metadata(position_idx, metadata)
+        for array_key in self._threads:
+            self._update_position_metadata(array_key, metadata)
 
     # -----------------------PRIVATE METHODS------------------------ #
 
     def _prepare_files(
-        self, path: Path, num_positions: int, overwrite: bool
+        self, path: Path, array_keys: list[str], overwrite: bool
     ) -> list[str]:
         path_root = str(path)
         for possible_ext in [".ome.tiff", ".ome.tif", ".tiff", ".tif"]:
@@ -157,10 +159,17 @@ class TifffileStream(MultiPositionOMEStream):
             ext = path.suffix
 
         fnames = []
-        for p_idx in range(num_positions):
-            # only append position index if there are multiple positions
-            if num_positions > 1:
-                p_path = Path(f"{path_root}_p{p_idx:03d}{ext}")
+        for array_key in array_keys:
+            # only append array key if there are multiple arrays
+            if len(array_keys) > 1:
+                # For backward compatibility: if array_key is just a number,
+                # format it as _p000 style
+                if array_key.isdigit():
+                    formatted_key = f"_p{int(array_key):03d}"
+                else:
+                    # For new grid format, use the key as-is
+                    formatted_key = array_key
+                p_path = Path(f"{path_root}{formatted_key}{ext}")
             else:
                 p_path = self._path
 
@@ -183,28 +192,34 @@ class TifffileStream(MultiPositionOMEStream):
         self, array_key: str, index: tuple[int, ...], frame: np.ndarray
     ) -> None:
         """TIFF-specific write implementation."""
-        self._queues[int(array_key)].put(frame)
+        self._queues[array_key].put(frame)
 
-    def _update_position_metadata(self, position_idx: int, metadata: ome.OME) -> None:
+    def _update_position_metadata(self, array_key: str, metadata: ome.OME) -> None:
         """Add OME metadata to TIFF file efficiently without rewriting image data."""
-        thread = self._threads[position_idx]
+        thread = self._threads[array_key]
         if not Path(thread._path).exists():  # pragma: no cover
             warnings.warn(
-                f"TIFF file for position {position_idx} does not exist at "
+                f"TIFF file for array {array_key} does not exist at "
                 f"{thread._path}. Not writing metadata.",
                 stacklevel=2,
             )
             return
 
         try:
+            # For array keys that are just numbers (backward compatibility),
+            # use them as position index. For new format keys, use 0 as default.
+            try:
+                position_idx = int(array_key)
+            except ValueError:
+                position_idx = 0
             position_ome = _create_position_specific_ome(position_idx, metadata)
             # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
             # requires ASCII strings
             ascii_xml = position_ome.to_xml().replace("µ", "&#x00B5;").encode("ascii")
         except Exception as e:
             raise RuntimeError(
-                f"Failed to create position-specific OME metadata for position "
-                f"{position_idx}. {e}"
+                f"Failed to create position-specific OME metadata for array "
+                f"{array_key}. {e}"
             ) from e
 
         try:
