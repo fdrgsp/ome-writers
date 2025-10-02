@@ -206,12 +206,23 @@ class TifffileStream(MultiPositionOMEStream):
             return
 
         try:
-            # For array keys that are just numbers (backward compatibility),
-            # use them as position index. For new format keys, use 0 as default.
-            try:
+            # Extract position index from array key
+            if array_key.isdigit():
+                # Backward compatibility: array key is just a number
                 position_idx = int(array_key)
-            except ValueError:
+            elif array_key.startswith("_p"):
+                # New format: extract position from _p0000_g0000 style key
+                # Find the position part after _p and before the next _
+                pos_part = array_key[2:]  # Skip "_p"
+                next_underscore = pos_part.find("_")
+                if next_underscore != -1:
+                    position_idx = int(pos_part[:next_underscore])
+                else:
+                    position_idx = int(pos_part)
+            else:
+                # Fallback for any other format
                 position_idx = 0
+
             position_ome = _create_position_specific_ome(position_idx, metadata)
             # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
             # requires ASCII strings
