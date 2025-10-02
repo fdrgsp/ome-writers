@@ -143,18 +143,13 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
-    # dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
-
-    from pathlib import Path
-    path = Path("/Users/fdrgsp/Desktop/t")
-    dest = path / "test.ome.tiff"
+    dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
 
     pymm = PYMMCP(seq, core, dest)
     pymm.run()
 
     # reopen the file and validate ome metadata
-    # for f in list(tmp_path.glob("*.ome.tiff")):
-    for f in list(path.glob("*.ome.tiff")):
+    for f in list(tmp_path.glob("*.ome.tiff")):
         with tifffile.TiffFile(f) as tif:
             ome_xml = tif.ome_metadata
             if ome_xml is not None:
