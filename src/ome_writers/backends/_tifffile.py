@@ -163,7 +163,7 @@ class TifffileStream(MultiPositionOMEStream):
             # only append array key if there are multiple arrays
             if len(array_keys) > 1:
                 # For backward compatibility: if array_key is just a number,
-                # format it as _p000 style
+                # format it as _p0000 style
                 if array_key.isdigit():
                     formatted_key = f"_p{int(array_key):04d}"
                 else:
