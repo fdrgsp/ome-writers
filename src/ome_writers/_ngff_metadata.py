@@ -6,14 +6,16 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from typing import Any
 
-    from ome_writers.model import Dimension, PlateNGFF
+    from yaozarrs.v05 import Plate
+
+    from ome_writers._dimensions import Dimension
 
 from ome_writers.model import dims_to_ngff_axes
 
 
 def ngff_meta_v5(
     array_dims: Mapping[str, Sequence[Dimension]],
-    plate: PlateNGFF | None = None,
+    plate: Plate | None = None,
 ) -> dict:
     """Create OME NGFF v0.5 metadata.
 
@@ -23,7 +25,7 @@ def ngff_meta_v5(
         A mapping of array paths to their corresponding dimension information.
         Each key is the path to a zarr array, and the value is a sequence of
         DimensionInfo objects describing the dimensions of that array.
-    plate : PlateNGFF | None, optional
+    plate : Plate | None, optional
         HCS plate metadata. If provided, plate metadata will be included
         in the OME metadata following the OME-NGFF 0.5 specification.
 
@@ -74,7 +76,7 @@ def ngff_meta_v5(
     return attrs
 
 
-def _plate_to_dict(plate: PlateNGFF) -> dict:
+def _plate_to_dict(plate: Plate) -> dict:
     """Convert a Plate object to OME-NGFF 0.5 compliant dictionary."""
     plate_dict = {
         "columns": [{"name": col.name} for col in plate.columns],

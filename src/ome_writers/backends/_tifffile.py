@@ -21,8 +21,8 @@ if TYPE_CHECKING:
     import numpy as np
     import ome_types.model as ome
 
+    from ome_writers._dimensions import Dimension
     from ome_writers.model import PlateNGFF
-    from ome_writers.model._dimensions import Dimension
 
 else:
     with suppress(ImportError):
@@ -91,9 +91,7 @@ class TifffileStream(MultiPositionOMEStream):
         overwrite: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic with HCS support
-        num_positions, tczyx_dims = self._init_positions(
-            dimensions, plate=plate
-        )
+        num_positions, tczyx_dims = self._init_positions(dimensions, plate=plate)
         self._delete_existing = overwrite
         self._path = Path(self._normalize_path(path))
         shape_5d = tuple(d.size for d in tczyx_dims)

@@ -1,13 +1,14 @@
 """Models used to represent OME schema metadata."""
 
-from ._base import FrozenBaseModel
-from ._dimensions import (
+from ome_writers._dimensions import (
     Dimension,
     DimensionLabel,
     UnitTuple,
     dims_to_ngff_axes,
     dims_to_ome_info,
 )
+
+from ._base import FrozenBaseModel
 from ._hcs import (
     AcquisitionNGFF,
     ColumnNGFF,

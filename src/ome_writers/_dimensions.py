@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, TypeAlias
 
-from ome_writers.model import FrozenBaseModel
+from pydantic import BaseModel, ConfigDict
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -18,7 +18,8 @@ DimensionLabel: TypeAlias = Literal["x", "y", "z", "t", "c", "p", "other"]
 UnitTuple: TypeAlias = tuple[float, str]
 
 
-class Dimension(FrozenBaseModel):
+class Dimension(BaseModel):
+    model_config = ConfigDict(frozen=True)
     label: DimensionLabel
     size: int
     unit: UnitTuple | None = None

@@ -7,6 +7,9 @@ build-backend = "hatchling.build"
 [tool.hatch.version]
 source = "vcs"
 
+[tool.hatch.metadata]
+allow-direct-references = true
+
 # https://peps.python.org/pep-0621/
 [project]
 name = "ome-writers"
@@ -26,7 +29,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
-dependencies = ["numpy>=2", "typing-extensions>=4.10.0"]
+dependencies = ["numpy>=2", "typing-extensions>=4.10.0", "yaozarrs @ git+https://github.com/tlambert03/yaozarrs.git"]
 
 [project.optional-dependencies]
 tensorstore = ["tensorstore>=0.1.69,!=0.1.72"]

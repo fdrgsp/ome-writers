@@ -7,14 +7,16 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from typing_extensions import Self
+from yaozarrs.v05 import FieldOfView, Well
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from types import TracebackType
 
     import numpy as np
+    from yaozarrs.v05 import Plate
 
-    from .model import Dimension, PlateNGFF, WellNGFF
+    from ._dimensions import Dimension
 
 
 class OMEStream(abc.ABC):
@@ -35,7 +37,7 @@ class OMEStream(abc.ABC):
         path: str,
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
-        plate: PlateNGFF | None = None,
+        plate: Plate | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
@@ -49,8 +51,8 @@ class OMEStream(abc.ABC):
             NumPy data type for the image data.
         dimensions : Sequence[Dimension]
             Sequence of dimension information describing the data structure.
-        plate : PlateNGFF | None
-            Optional Plate information for plate-based acquisitions.
+        plate : Plate | None
+            Optional ngff plate metadata for HCS data.
         overwrite : bool, optional
             Whether to overwrite existing files or directories. Default is False.
 
@@ -122,14 +124,14 @@ class MultiPositionOMEStream(OMEStream):
         # non-position dimensions
         # (e.g. time, z, c, y, x) that are not
         self._non_position_dims: Sequence[Dimension] = []
-        # HCS metadata for proper NGFF structure
-        self._plate: PlateNGFF | None = None
-        self._wells: dict[str, WellNGFF] = {}
+        # HCS metadata for NGFF structure
+        self._plate: Plate | None = None
+        self._wells: dict[str, Well] = {}
 
     def _init_positions(
         self,
         dimensions: Sequence[Dimension],
-        plate: PlateNGFF | None = None,
+        plate: Plate | None = None,
     ) -> tuple[int, Sequence[Dimension]]:
         """Initialize position tracking and return num_positions, non_position_dims.
 
@@ -137,7 +139,7 @@ class MultiPositionOMEStream(OMEStream):
         ----------
         dimensions : Sequence[Dimension]
             The dimension information.
-        plate : PlateNGFF | None
+        plate : Plate | None
             Optional plate metadata for HCS data.
 
         Returns
@@ -179,8 +181,8 @@ class MultiPositionOMEStream(OMEStream):
         return num_positions, non_position_dims
 
     def _extract_wells_from_plate(
-        self, plate: PlateNGFF, num_positions: int
-    ) -> dict[str, WellNGFF]:
+        self, plate: Plate, num_positions: int
+    ) -> dict[str, Well]:
         """Extract wells dictionary from plate metadata.
 
         This creates a wells dictionary properly distributing positions/FOVs
@@ -188,20 +190,18 @@ class MultiPositionOMEStream(OMEStream):
 
         Parameters
         ----------
-        plate : PlateNGFF
+        plate : Plate
             The plate metadata containing well information.
         num_positions : int
             Total number of positions in the acquisition.
 
         Returns
         -------
-        dict[str, WellNGFF]
+        dict[str, Well]
             Dictionary mapping well paths to well metadata.
         """
-        from .model._hcs import WellImageNGFF, WellNGFF
-
         wells_dict = {}
-        num_wells = len(plate.wells)
+        num_wells = len(plate.plate.wells)
 
         if num_wells == 0:
             return wells_dict
@@ -212,18 +212,18 @@ class MultiPositionOMEStream(OMEStream):
         remaining_positions = num_positions % num_wells
 
         current_field_idx = 0
-        for i, well_in_plate in enumerate(plate.wells):
+        for i, well_in_plate in enumerate(plate.plate.wells):
             # Some wells get an extra field if positions don't divide evenly
             extra_field = 1 if i < remaining_positions else 0
             num_fields_this_well = fields_per_well + extra_field
 
-            # Create WellImageNGFF for each field in this well
+            # Create FieldOfView for each field in this well
             images = []
             for _ in range(num_fields_this_well):
-                images.append(WellImageNGFF(path=str(current_field_idx)))
+                images.append(FieldOfView(path=str(current_field_idx)))
                 current_field_idx += 1
 
-            wells_dict[well_in_plate.path] = WellNGFF(images=images, version="0.5")
+            wells_dict[well_in_plate.path] = Well(images=images, version="0.5")
 
         return wells_dict
 

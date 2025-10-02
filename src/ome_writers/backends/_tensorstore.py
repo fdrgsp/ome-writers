@@ -14,9 +14,9 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     import numpy as np
+    from yaozarrs.v05 import Plate
 
-    from ome_writers._ngff_metadata import PlateNGFF
-    from ome_writers.model import Dimension
+    from ome_writers._dimensions import Dimension
 
 
 class TensorStoreZarrStream(MultiPositionOMEStream):
@@ -47,14 +47,12 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         path: str,
         dtype: np.dtype,
         dimensions: Sequence[Dimension],
-        plate: PlateNGFF | None = None,
+        plate: Plate | None = None,
         *,
         overwrite: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic with HCS support
-        _, non_position_dims = self._init_positions(
-            dimensions, plate=plate
-        )
+        _, non_position_dims = self._init_positions(dimensions, plate=plate)
         self._delete_existing = overwrite
 
         self._create_group(self._normalize_path(path), dimensions)
