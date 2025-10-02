@@ -18,6 +18,8 @@ except ImportError:
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
 
     from .conftest import AvailableBackend
@@ -62,34 +64,37 @@ def test_pymmcore_plus_mda(tmp_path: Path, backend: AvailableBackend) -> None:
 
 
 class PYMMCP:
+    """A little example of how one might integrate pymmcore_plus MDA with ome-writers.
+
+    This class listens to pymmcore_plus MDA events and writes data to an OME-TIFF
+    file using ome-writers. It also collects metadata during the acquisition and
+    updates the OME metadata at the end of the sequence.
+    """
+
     def __init__(
-        self, sequence: useq.MDASequence, core: CMMCorePlus, dest: Path, backend: str
+        self, sequence: useq.MDASequence, core: CMMCorePlus, dest: Path
     ) -> None:
         self._seq = sequence
         self._core = core
         self._dest = dest
-        self._backend = backend
-
-        self._stream: omew.OMEStream
 
         self._summary_meta: SummaryMetaV1 = {}  # type: ignore
         self._frame_meta_list: list[FrameMetaV1] = []
+
+        self._stream = omew.create_stream(
+            self._dest,
+            dimensions=omew.dims_from_useq(
+                self._seq, core.getImageWidth(), core.getImageHeight()
+            ),
+            dtype=np.uint16,
+            overwrite=True,
+            backend="tiff",
+        )
 
         @core.mda.events.sequenceStarted.connect
         def _on_sequence_started(
             sequence: useq.MDASequence, summary_meta: SummaryMetaV1
         ) -> None:
-            plate, _ = omew.ngff_plate_and_wells_from_useq(self._seq)
-            self._stream = omew.create_stream(
-                self._dest,
-                dimensions=omew.dims_from_useq(
-                    self._seq, core.getImageWidth(), core.getImageHeight()
-                ),
-                plate=plate,
-                dtype=np.uint16,
-                overwrite=True,
-                backend=cast("omew.BackendName", self._backend),
-            )
             self._summary_meta = summary_meta
 
         @core.mda.events.frameReady.connect
@@ -102,26 +107,26 @@ class PYMMCP:
         @core.mda.events.sequenceFinished.connect
         def _on_sequence_finished(sequence: useq.MDASequence) -> None:
             self._stream.flush()
-            _o = create_ome_metadata(self._summary_meta, self._frame_meta_list)
-            # self._stream.update_metadata(dict(_o))
+            ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
+            self._stream.update_ome_metadata(ome)
 
     def run(self) -> None:
         self._core.mda.run(self._seq)
 
 
-# def test_pymmcore_plus_mda_acquire_zarr(tmp_path: Path) -> None:
-def test_pymmcore_plus_mda_acquire_zarr() -> None:
+def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
     """Test pymmcore_plus MDA with metadata update after acquisition."""
 
-    # skip if acquire_zarr is not installed
+    # skip if tifffile or ome-types is not installed
     try:
-        import acquire_zarr  # noqa: F401
+        import tifffile
+        from ome_types import from_xml
     except ImportError:
-        pytest.skip("acquire_zarr is not installed", allow_module_level=True)
+        pytest.skip("tifffile or ome-types is not installed")
 
     seq = useq.MDASequence(
-        # time_plan=useq.TIntervalLoops(interval=0.001, loops=2),  # type: ignore
-        # z_plan=useq.ZRangeAround(range=2, step=1),
+        time_plan=useq.TIntervalLoops(interval=0.001, loops=2),  # type: ignore
+        z_plan=useq.ZRangeAround(range=2, step=1),
         channels=["DAPI", "FITC"],  # type: ignore
         stage_positions=useq.WellPlatePlan(
             plate=useq.WellPlate.from_str("96-well"),
@@ -133,17 +138,17 @@ def test_pymmcore_plus_mda_acquire_zarr() -> None:
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
-    dest = Path("/Users/fdrgsp/Desktop/t/test_acq_zarr.zarr")
+    dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
 
-    pymm = PYMMCP(seq, core, dest, backend="acquire-zarr")
+    pymm = PYMMCP(seq, core, dest)
     pymm.run()
 
-    json_attr = dest / "zarr.json"
-    assert json_attr.exists()
-    with open(json_attr) as f:
-        import json
-
-        from rich import print
-
-        d = json.load(f)
-        print(d)
+    # reopen the file and validate ome metadata
+    for f in list(tmp_path.glob("*.ome.tiff")):
+        with tifffile.TiffFile(f) as tif:
+            ome_xml = tif.ome_metadata
+            if ome_xml is not None:
+                # validate by attempting to parse
+                ome = from_xml(ome_xml)
+                # assert there is plate information
+                assert ome.plates
