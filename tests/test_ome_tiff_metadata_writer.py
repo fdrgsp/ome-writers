@@ -208,7 +208,7 @@ def test_update_metadata_multifile(tmp_path: Path) -> None:
     base_path = Path(str(output_path).replace(".ome.tiff", ""))
 
     for pos_idx in range(2):
-        pos_file = base_path.with_name(f"{base_path.name}_p{pos_idx:03d}.ome.tiff")
+        pos_file = base_path.with_name(f"{base_path.name}_p{pos_idx:04d}.ome.tiff")
         assert pos_file.exists()
 
         with tifffile.TiffFile(str(pos_file)) as tif:
@@ -356,7 +356,7 @@ def test_update_metadata_with_plates(tmp_path: Path) -> None:
     base_path = Path(str(output_path).replace(".ome.tiff", ""))
 
     for pos_idx in range(2):
-        pos_file = base_path.with_name(f"{base_path.name}_p{pos_idx:03d}.ome.tiff")
+        pos_file = base_path.with_name(f"{base_path.name}_p{pos_idx:04d}.ome.tiff")
         assert pos_file.exists()
 
         with tifffile.TiffFile(str(pos_file)) as tif:
@@ -449,8 +449,8 @@ def test_tifffile_stream_multiposition_basic(tmp_path: Path) -> None:
 
     # Verify separate files were created for each position
     base_path = Path(str(output_path).replace(".ome.tiff", ""))
-    pos0_file = base_path.with_name(f"{base_path.name}_p000.ome.tiff")
-    pos1_file = base_path.with_name(f"{base_path.name}_p001.ome.tiff")
+    pos0_file = base_path.with_name(f"{base_path.name}_p0000.ome.tiff")
+    pos1_file = base_path.with_name(f"{base_path.name}_p0001.ome.tiff")
 
     assert pos0_file.exists()
     assert pos1_file.exists()

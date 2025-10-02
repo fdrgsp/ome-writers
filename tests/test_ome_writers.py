@@ -213,13 +213,13 @@ def test_multiposition_acquisition(backend: AvailableBackend, tmp_path: Path) ->
     elif (ext := backend.file_ext).endswith("tiff"):
         # For TIFF, separate files are created for each position
         base_path = Path(str(output_path).replace(ext, ""))
-        assert (base_path.with_name(f"{base_path.name}_p000{ext}")).exists()
-        assert (base_path.with_name(f"{base_path.name}_p001{ext}")).exists()
-        assert (base_path.with_name(f"{base_path.name}_p002{ext}")).exists()
+        assert (base_path.with_name(f"{base_path.name}_p0000{ext}")).exists()
+        assert (base_path.with_name(f"{base_path.name}_p0001{ext}")).exists()
+        assert (base_path.with_name(f"{base_path.name}_p0002{ext}")).exists()
 
         # Verify that each TIFF file has the correct metadata and shape
         for pos_idx in range(3):
-            pos_file = base_path.with_name(f"{base_path.name}_p{pos_idx:03d}{ext}")
+            pos_file = base_path.with_name(f"{base_path.name}_p{pos_idx:04d}{ext}")
             assert pos_file.exists()
 
             # Read the file to verify it has correct shape

@@ -57,7 +57,7 @@ def test_pymmcore_plus_mda(tmp_path: Path, backend: AvailableBackend) -> None:
 
     # make assertions
     if backend.file_ext.endswith(".tiff"):
-        assert os.path.exists(str(dest).replace(".ome.tiff", "_p000.ome.tiff"))
+        assert os.path.exists(str(dest).replace(".ome.tiff", "_p0000.ome.tiff"))
     else:
         assert dest.exists()
 
@@ -133,6 +133,7 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
         #     selected_wells=((0, 0), (0, 1)),
         # ),
         stage_positions=[(0, 0), (0.1, 0.1)],  # type: ignore
+        grid_plan=useq.GridRowsColumns(rows=2, columns=2),  # type: ignore
     )
 
     core = CMMCorePlus()
@@ -154,4 +155,5 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
                 # assert ome.plates
 
                 from rich import print
+
                 print(ome.to_xml())

@@ -165,7 +165,7 @@ class TifffileStream(MultiPositionOMEStream):
                 # For backward compatibility: if array_key is just a number,
                 # format it as _p000 style
                 if array_key.isdigit():
-                    formatted_key = f"_p{int(array_key):03d}"
+                    formatted_key = f"_p{int(array_key):04d}"
                 else:
                     # For new grid format, use the key as-is
                     formatted_key = array_key

@@ -110,18 +110,16 @@ class MultiPositionOMEStream(OMEStream):
     def __init__(self) -> None:
         # dimension info for position dimension, if any
         self._position_dim: Dimension | None = None
-        # dimension info for grid dimension, if any
-        self._grid_dim: Dimension | None = None
+        # dimension info for other positional dimensions (like grid), if any
+        self._positional_dims: list[Dimension] = []
         # A mapping of indices to (array_key, non-position index)
         self._indices: dict[int, tuple[str, tuple[int, ...]]] = {}
         # number of times append() has been called
         self._append_count = 0
         # number of positions in the stream
         self._num_positions = 0
-        # number of grids in the stream
-        self._num_grids = 0
         # non-position dimensions
-        # (e.g. time, z, c, y, x) that are not position or grid
+        # (e.g. time, z, c, y, x) that are not positional
         self._non_position_dims: Sequence[Dimension] = []
 
     def _init_positions(
@@ -134,66 +132,88 @@ class MultiPositionOMEStream(OMEStream):
         tuple[int, Sequence[Dimension]]
             The number of positions and the non-position dimensions.
         """
-        # Separate position and grid dimensions from other dimensions
+        # Standard dimensions that don't affect array organization
+        standard_dims = {"x", "y", "t", "c", "z"}
+
+        # Separate position dimension from other dimensions
         position_dims = [d for d in dimensions if d.label == "p"]
-        grid_dims = [d for d in dimensions if d.label == "g"]
-        non_position_dims = [d for d in dimensions if d.label not in ("p", "g")]
+        # Find non-standard dimensions (excluding position) for positional organization
+        positional_dims = [
+            d for d in dimensions if d.label not in standard_dims and d.label != "p"
+        ]
+        # Standard processing dimensions (t, c, z - excluding spatial x, y)
+        non_position_dims = [
+            d for d in dimensions if d.label in standard_dims and d.label != "p"
+        ]
 
-        num_positions = position_dims[0].size if position_dims else 1
-        num_grids = grid_dims[0].size if grid_dims else 1
-
-        # Create ranges for all non-spatial dimensions (excluding y, x)
+        # Create ranges for non-spatial standard dimensions (for indexing)
         non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
 
+        num_positions = position_dims[0].size if position_dims else 1
+
+        # Create ranges for all positional dimensions in consistent order
+        positional_ranges = [range(d.size) for d in positional_dims]
+
         # Create the cartesian product for all combinations
-        # When both p and g exist: (pos, grid, other_dims)
-        # When only p exists: (pos, other_dims)
-        # When only g exists: (grid, other_dims)
-        # When neither exists: (other_dims)
-        if position_dims and grid_dims:
-            range_iter = enumerate(product(
-                range(num_positions),
-                range(num_grids),
-                *non_p_ranges
-            ))
-        elif position_dims:
-            range_iter = enumerate(product(
-                range(num_positions),
-                *non_p_ranges
-            ))
-        elif grid_dims:
-            range_iter = enumerate(product(
-                range(num_grids),
-                *non_p_ranges
-            ))
+        # Order: position (if exists), then positional dims, then processing dims
+        if position_dims:
+            range_iter = enumerate(
+                product(range(num_positions), *positional_ranges, *non_p_ranges)
+            )
         else:
-            range_iter = enumerate(product(*non_p_ranges))
+            range_iter = enumerate(product(*positional_ranges, *non_p_ranges))
 
         self._position_dim = position_dims[0] if position_dims else None
-        self._grid_dim = grid_dims[0] if grid_dims else None
+        self._positional_dims = positional_dims
 
-        # Create array keys with format "_p000_g_000" or "0" for backward compatibility
+        # Create array keys with format "_p000_g000_r000" etc.
         self._indices = {}
         for i, values in range_iter:
-            if position_dims and grid_dims:
-                pos, grid, *idx = values
-                array_key = f"_p{pos:03d}_g_{grid:03d}"
-            elif position_dims:
-                pos, *idx = values
-                array_key = str(pos)
-            elif grid_dims:
-                grid, *idx = values
-                array_key = f"_g_{grid:03d}"
+            array_key_parts = []
+
+            if position_dims:
+                pos = values[0]
+                array_key_parts.append(f"_p{pos:04d}")
+                remaining_values = values[1:]
             else:
-                idx = list(values) if values else []
+                remaining_values = values
+
+            # Add positional dimension parts
+            for j, dim in enumerate(positional_dims):
+                if j < len(remaining_values):
+                    val = remaining_values[j]
+                    array_key_parts.append(f"_{dim.label}{val:04d}")
+
+            # Calculate the index for non-positional dimensions
+            positional_count = len(positional_dims)
+            if position_dims:
+                positional_count += 1
+            idx = remaining_values[len(positional_dims) :] if remaining_values else []
+
+            # Create the final array key
+            if array_key_parts:
+                array_key = "".join(array_key_parts)
+            elif len(values) == 0:
                 array_key = "0"
+            else:
+                # Fallback for when we have no positional dims
+                array_key = "0"
+
+            # Backward compatibility: if only position dimension exists,
+            # use simple format (just the position number)
+            if position_dims and not positional_dims and values:
+                array_key = str(values[0])
+
             self._indices[i] = (array_key, tuple(idx))
 
         self._append_count = 0
         self._num_positions = num_positions
-        # Store actual grid count for tracking (0 if no grid dimension)
-        self._num_grids = grid_dims[0].size if grid_dims else 0
         self._non_position_dims = non_position_dims
+
+        # Backward compatibility properties for grid dimension
+        grid_dims = [d for d in positional_dims if d.label == "g"]
+        self._grid_dim = grid_dims[0] if grid_dims else None
+        self._num_grids = grid_dims[0].size if grid_dims else 0
 
         return num_positions, non_position_dims
 
