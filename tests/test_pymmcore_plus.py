@@ -71,11 +71,16 @@ class PYMMCP:
     """
 
     def __init__(
-        self, sequence: useq.MDASequence, core: CMMCorePlus, dest: Path
+        self,
+        sequence: useq.MDASequence,
+        core: CMMCorePlus,
+        dest: Path,
+        backend: AvailableBackend,
     ) -> None:
         self._seq = sequence
         self._core = core
         self._dest = dest
+        self._backend = backend.name
 
         self._summary_meta: SummaryMetaV1 = {}  # type: ignore
         self._frame_meta_list: list[FrameMetaV1] = []
@@ -87,7 +92,7 @@ class PYMMCP:
             ),
             dtype=np.uint16,
             overwrite=True,
-            backend="tiff",
+            backend=self._backend,
         )
 
         @core.mda.events.sequenceStarted.connect
@@ -114,47 +119,59 @@ class PYMMCP:
         self._core.mda.run(self._seq)
 
 
-def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
-    """Test pymmcore_plus MDA with metadata update after acquisition."""
-
-    # skip if tifffile or ome-types is not installed
-    try:
-        import tifffile
-        from ome_types import from_xml
-    except ImportError:
-        pytest.skip("tifffile or ome-types is not installed")
-
-    seq = useq.MDASequence(
+TEST_SEQ = [
+    useq.MDASequence(
         time_plan=useq.TIntervalLoops(interval=0.001, loops=2),  # type: ignore
         z_plan=useq.ZRangeAround(range=2, step=1),
         channels=["DAPI", "FITC"],  # type: ignore
-        # stage_positions=useq.WellPlatePlan(
-        #     plate=useq.WellPlate.from_str("96-well"),
-        #     a1_center_xy=(0, 0),
-        #     selected_wells=((0, 0), (0, 1)),
-        # ),
+        stage_positions=useq.WellPlatePlan(
+            plate=useq.WellPlate.from_str("96-well"),
+            a1_center_xy=(0, 0),
+            selected_wells=((0, 0), (0, 1)),
+            well_points_plan=useq.GridRowsColumns(rows=1, columns=2),
+        ),
+    ),
+    useq.MDASequence(
+        z_plan=useq.ZRangeAround(range=2, step=1),
+        channels=["DAPI", "FITC"],  # type: ignore
         stage_positions=[(0, 0), (0.1, 0.1)],  # type: ignore
         grid_plan=useq.GridRowsColumns(rows=1, columns=2),  # type: ignore
-    )
+    ),
+]
 
+
+@pytest.mark.parametrize("seq", TEST_SEQ)
+def test_pymmcore_plus_mda_metadata_update(
+    tmp_path: Path, backend: AvailableBackend, seq: useq.MDASequence
+) -> None:
+    """Test pymmcore_plus MDA with metadata update after acquisition."""
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
     dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
 
-    pymm = PYMMCP(seq, core, dest)
+    pymm = PYMMCP(seq, core, dest, backend=backend)
     pymm.run()
 
-    # reopen the file and validate ome metadata
-    for f in list(tmp_path.glob("*.ome.tiff")):
-        with tifffile.TiffFile(f) as tif:
-            ome_xml = tif.ome_metadata
-            if ome_xml is not None:
-                # validate by attempting to parse
-                ome = from_xml(ome_xml)
-                # assert there is plate information
-                # assert ome.plates
+    if backend.file_ext.endswith("tiff"):
+        try:
+            import tifffile
+            from ome_types import from_xml
+        except ImportError:
+            pytest.skip("tifffile or ome-types is not installed")
+        # reopen the file and validate ome metadata
+        for f in list(tmp_path.glob("*.ome.tiff")):
+            with tifffile.TiffFile(f) as tif:
+                ome_xml = tif.ome_metadata
+                if ome_xml is not None:
+                    # validate by attempting to parse
+                    ome = from_xml(ome_xml)
+                    # assert there is plate information
+                    if isinstance(seq.stage_positions, useq.WellPlatePlan):
+                        assert ome.plates
 
-                from rich import print
-
-                print(ome.to_xml())
+    elif backend.file_ext.endswith("zarr"):
+        assert dest.exists()
+        for p in range(len(seq.stage_positions)):
+            assert (dest / str(p)).exists()
+        assert (dest / "zarr.json").exists()
