@@ -57,7 +57,7 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
 
         # Create stores for each unique array key
         unique_array_keys = {
-            frame_idx.array_key for frame_idx in self._indices.values()
+            array_key for array_key, _ in self._indices.values()
         }
         for array_key in sorted(unique_array_keys):
             spec = self._create_spec(dtype, non_position_dims, array_key)
@@ -119,7 +119,7 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
 
         # Get all unique array keys from the indices mapping
         unique_array_keys = {
-            frame_idx.array_key for frame_idx in self._indices.values()
+            array_key for array_key, _ in self._indices.values()
         }
         for array_key in sorted(unique_array_keys):
             self._array_paths[array_key] = self._group_path / array_key

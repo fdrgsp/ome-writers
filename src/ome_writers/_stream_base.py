@@ -4,7 +4,7 @@ import abc
 from abc import abstractmethod
 from itertools import product
 from pathlib import Path
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
@@ -15,58 +15,6 @@ if TYPE_CHECKING:
     import numpy as np
 
     from ._dimensions import Dimension
-
-
-STANDARD_DIMS = {"x", "y", "t", "c", "z"}
-
-
-class FrameIndex(NamedTuple):
-    """Index information for a frame in a multi-dimensional acquisition.
-
-    Attributes
-    ----------
-    array_key : str
-        The key identifying which array/file this frame belongs to.
-        e.g, "_p0000" for position 0
-        e.g, "_p0000_g0001" for position 0, grid 1
-        e.g. "_p0000_g0001_r0002" for position 0, grid 1, r 2
-    dim_index : tuple[int, ...]
-        The index tuple for non-positional dimensions (t, c, z).
-    """
-
-    array_key: str
-    dim_index: tuple[int, ...]
-
-    @property
-    def image_id(self) -> str:
-        """Convert array_key to image_id format for OME metadata.
-
-        Examples
-        --------
-        - "_p0000_g0001" -> "0:1"
-        - "_p0001" -> "1"
-        - "0" -> "0"
-        """
-        # Extract position indices from array_key like "_p0000_g0001_r0002"
-        parts = [p for p in self.array_key.split("_") if p]
-
-        if len(parts) == 1:
-            if (name := parts[0]).isdigit():
-                return name
-            else:
-                # keep only numeric characters
-                name = "".join(c for c in name if c.isdigit())
-                return str(int(name))
-
-        indices = []
-        for part in parts:
-            if part and len(part) > 1:
-                try:
-                    indices.append(str(int(part[1:])))
-                except ValueError:
-                    continue
-
-        return ":".join(indices) if indices else "0"
 
 
 class OMEStream(abc.ABC):
@@ -162,27 +110,20 @@ class MultiPositionOMEStream(OMEStream):
     def __init__(self) -> None:
         # dimension info for position dimension, if any
         self._position_dim: Dimension | None = None
-        # Mapping of frame indices to FrameIndex objects
-        self._indices: dict[int, FrameIndex] = {}
+        # A mapping of indices to (array_key, non-position index)
+        self._indices: dict[int, tuple[str, tuple[int, ...]]] = {}
         # number of times append() has been called
         self._append_count = 0
         # number of positions in the stream
         self._num_positions = 0
-        # non-position dimensions (e.g. time, z, c, y, x)
+        # non-position dimensions
+        # (e.g. time, z, c, y, x) that are not
         self._non_position_dims: Sequence[Dimension] = []
 
     def _init_positions(
         self, dimensions: Sequence[Dimension]
     ) -> tuple[int, Sequence[Dimension]]:
         """Initialize position tracking and return num_positions, non_position_dims.
-
-        This method separates dimensions into two categories:
-        1. Standard dimensions (x, y, t, c, z) - used for array indexing
-        2. Position dimension (p) - for multi-position acquisitions
-
-        The position dimension is used to create separate arrays with keys
-        like "_p0000", "_p0001", etc., while standard dimensions are used
-        for indexing within each array.
 
         Returns
         -------
@@ -191,34 +132,13 @@ class MultiPositionOMEStream(OMEStream):
         """
         # Separate position dimension from other dimensions
         position_dims = [d for d in dimensions if d.label == "p"]
-        # Standard processing dimensions (all non-position dims)
         non_position_dims = [d for d in dimensions if d.label != "p"]
-
-        # Create ranges for non-spatial standard dimensions (for indexing)
-        non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
-
-        # get number of positions (first dimension if multiple position_dims or 1)
         num_positions = position_dims[0].size if position_dims else 1
-
-        # Create the cartesian product for all combinations
-        # Order: position (if exists), then processing dims
-        if position_dims:
-            range_iter = enumerate(product(range(num_positions), *non_p_ranges))
-            # When there's a position dimension, extract pos from the product
-            self._indices = {}
-            for i, (pos, *idx) in range_iter:
-                array_key = str(pos)
-                self._indices[i] = FrameIndex(array_key, tuple(idx))
-        else:
-            range_iter = enumerate(product(*non_p_ranges))
-            # When there's no position dimension, all data goes to array "0"
-            self._indices = {}
-            for i, idx_tuple in range_iter:
-                self._indices[i] = FrameIndex("0", idx_tuple)
+        non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
+        range_iter = enumerate(product(range(num_positions), *non_p_ranges))
 
         self._position_dim = position_dims[0] if position_dims else None
-
-        # Create array keys as simple position indices: "0", "1", "2", etc.
+        self._indices = {i: (str(pos), tuple(idx)) for i, (pos, *idx) in range_iter}
         self._append_count = 0
         self._num_positions = num_positions
         self._non_position_dims = non_position_dims
@@ -250,6 +170,6 @@ class MultiPositionOMEStream(OMEStream):
         if not self.is_active():
             msg = "Stream is closed or uninitialized. Call create() first."
             raise RuntimeError(msg)
-        frame_idx = self._indices[self._append_count]
-        self._write_to_backend(frame_idx.array_key, frame_idx.dim_index, frame)
+        array_key, index = self._indices[self._append_count]
+        self._write_to_backend(array_key, index, frame)
         self._append_count += 1

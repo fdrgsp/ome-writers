@@ -17,7 +17,7 @@ OME_DIM_TYPE = {"y": "space", "x": "space", "z": "space", "t": "time", "c": "cha
 OME_UNIT = {"um": "micrometer", "ml": "milliliter", "s": "second", None: "unknown"}
 
 
-# Recognized dimension labels - now supports arbitrary strings
+# Recognized dimension labels
 # Standard OME dimensions: x, y, z, t, c, p
 # Common positional dimensions: g (grid), etc.
 DimensionLabel: TypeAlias = str

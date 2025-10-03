@@ -204,7 +204,7 @@ def test_zarr_with_positional_dims() -> None:
 
         # Get unique array keys
         unique_keys = sorted(
-            {frame_idx.array_key for frame_idx in stream._indices.values()}
+            {array_key for array_key, _ in stream._indices.values()}
         )
 
         # Should have 2 unique arrays (only 2 positions, g is a regular dimension)
@@ -216,8 +216,8 @@ def test_zarr_with_positional_dims() -> None:
         for key in unique_keys:
             count = sum(
                 1
-                for frame_idx in stream._indices.values()
-                if frame_idx.array_key == key
+                for array_key, _ in stream._indices.values()
+                if array_key == key
             )
             assert count == 4
 
@@ -226,8 +226,8 @@ def test_zarr_with_positional_dims() -> None:
         for key in unique_keys:
             count = sum(
                 1
-                for frame_idx in stream._indices.values()
-                if frame_idx.array_key == key
+                for array_key, _ in stream._indices.values()
+                if array_key == key
             )
             print(f"  {key}: {count} frames")
 

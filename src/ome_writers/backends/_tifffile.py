@@ -8,12 +8,12 @@ from contextlib import suppress
 from itertools import count
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from typing_extensions import Self
 
 from ome_writers._dimensions import dims_to_ome
-from ome_writers._stream_base import FrameIndex, MultiPositionOMEStream
+from ome_writers._stream_base import MultiPositionOMEStream
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -26,6 +26,61 @@ if TYPE_CHECKING:
 else:
     with suppress(ImportError):
         import ome_types.model as ome
+
+
+STANDARD_DIMS = {"x", "y", "t", "c", "z"}
+
+
+class FrameIndex(NamedTuple):
+    """Index information for a frame in a multi-dimensional acquisition.
+
+    This is used specifically by the TIFF backend to support multi-axis
+    positional dimensions (p, g, r, etc.) with hierarchical Image IDs.
+
+    Attributes
+    ----------
+    array_key : str
+        The key identifying which array/file this frame belongs to.
+        e.g, "_p0000" for position 0
+        e.g, "_p0000_g0001" for position 0, grid 1
+        e.g. "_p0000_g0001_r0002" for position 0, grid 1, region 2
+    dim_index : tuple[int, ...]
+        The index tuple for non-positional dimensions (t, c, z).
+    """
+
+    array_key: str
+    dim_index: tuple[int, ...]
+
+    @property
+    def image_id(self) -> str:
+        """Convert array_key to image_id format for OME metadata.
+
+        Examples
+        --------
+        - "_p0000_g0001" -> "0:1"
+        - "_p0001" -> "1"
+        - "0" -> "0"
+        """
+        # Extract position indices from array_key like "_p0000_g0001_r0002"
+        parts = [p for p in self.array_key.split("_") if p]
+
+        if len(parts) == 1:
+            if (name := parts[0]).isdigit():
+                return name
+            else:
+                # keep only numeric characters
+                name = "".join(c for c in name if c.isdigit())
+                return str(int(name))
+
+        indices = []
+        for part in parts:
+            if part and len(part) > 1:
+                try:
+                    indices.append(str(int(part[1:])))
+                except ValueError:
+                    continue
+
+        return ":".join(indices) if indices else "0"
 
 
 class TifffileStream(MultiPositionOMEStream):
@@ -75,6 +130,8 @@ class TifffileStream(MultiPositionOMEStream):
         self._array_key_to_frame_idx: dict[str, FrameIndex] = {}
         # Additional positional dimensions (g, r, etc.) for multi-axis support
         self._positional_dims: list[Dimension] = []
+        # Override base class type - TIFF uses FrameIndex instead of plain tuples
+        self._indices: dict[int, FrameIndex] = {}  # type: ignore[assignment]
         self._is_active = False
 
     # ------------------------PUBLIC METHODS------------------------ #
@@ -104,8 +161,6 @@ class TifffileStream(MultiPositionOMEStream):
             The number of positions and the non-position dimensions.
         """
         from itertools import product
-
-        from ome_writers._stream_base import STANDARD_DIMS
 
         # Separate position dimension from other dimensions
         position_dims = [d for d in dimensions if d.label == "p"]
@@ -227,6 +282,15 @@ class TifffileStream(MultiPositionOMEStream):
     def is_active(self) -> bool:
         """Return True if the stream is currently active."""
         return self._is_active
+
+    def append(self, frame: np.ndarray) -> None:
+        """Append a frame to the TIFF stream."""
+        if not self.is_active():
+            msg = "Stream is closed or uninitialized. Call create() first."
+            raise RuntimeError(msg)
+        frame_idx = self._indices[self._append_count]  # type: ignore[assignment]
+        self._write_to_backend(frame_idx.array_key, frame_idx.dim_index, frame)
+        self._append_count += 1
 
     def flush(self) -> None:
         """Flush all pending writes to the underlying TIFF files."""
