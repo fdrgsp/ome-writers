@@ -108,6 +108,10 @@ class PYMMCP:
             self._stream.flush()
             if hasattr(self._stream, "update_ome_metadata"):
                 ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
+
+                # from rich import print
+                # print(ome.to_xml())
+
                 self._stream.update_ome_metadata(ome)
 
     def run(self) -> None:

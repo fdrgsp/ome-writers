@@ -141,8 +141,24 @@ class TifffileStream(MultiPositionOMEStream):
         if not isinstance(metadata, self._ome.OME):  # pragma: no cover
             raise TypeError(f"Expected OME metadata, got {type(metadata)}")
 
+        # Build a mapping from array_key to the correct image index
+        # Each unique array_key corresponds to one image in sequential order
+        array_key_to_image_idx: dict[str, int] = {}
+        unique_array_keys = []
+        for _, (array_key, _) in self._indices.items():
+            if array_key not in unique_array_keys:
+                unique_array_keys.append(array_key)
+
+        # Assign sequential image indices to array keys
+        for image_idx, array_key in enumerate(unique_array_keys):
+            array_key_to_image_idx[array_key] = image_idx
+
         for array_key in self._threads:
-            self._update_position_metadata(array_key, metadata)
+            image_idx = array_key_to_image_idx.get(array_key, 0)
+            self._update_position_metadata(array_key, metadata, image_idx)
+
+        # for array_key in self._threads:
+        #      self._update_position_metadata(array_key, metadata)
 
     # -----------------------PRIVATE METHODS------------------------ #
 
@@ -194,7 +210,9 @@ class TifffileStream(MultiPositionOMEStream):
         """TIFF-specific write implementation."""
         self._queues[array_key].put(frame)
 
-    def _update_position_metadata(self, array_key: str, metadata: ome.OME) -> None:
+    def _update_position_metadata(
+        self, array_key: str, metadata: ome.OME, image_idx: int
+    ) -> None:
         """Add OME metadata to TIFF file efficiently without rewriting image data."""
         thread = self._threads[array_key]
         if not Path(thread._path).exists():  # pragma: no cover
@@ -206,31 +224,15 @@ class TifffileStream(MultiPositionOMEStream):
             return
 
         try:
-            # Extract position index from array key
-            if array_key.isdigit():
-                # Backward compatibility: array key is just a number
-                position_idx = int(array_key)
-            elif array_key.startswith("_p"):
-                # New format: extract position from _p0000_g0000 style key
-                # Find the position part after _p and before the next _
-                pos_part = array_key[2:]  # Skip "_p"
-                next_underscore = pos_part.find("_")
-                if next_underscore != -1:
-                    position_idx = int(pos_part[:next_underscore])
-                else:
-                    position_idx = int(pos_part)
-            else:
-                # Fallback for any other format
-                position_idx = 0
-
-            position_ome = _create_position_specific_ome(position_idx, metadata)
+            # Use the provided image_idx directly instead of extracting from array_key
+            position_ome = _create_position_specific_ome(image_idx, metadata)
             # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
             # requires ASCII strings
             ascii_xml = position_ome.to_xml().replace("µ", "&#x00B5;").encode("ascii")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to create position-specific OME metadata for array "
-                f"{array_key}. {e}"
+                f"{array_key} (image {image_idx}). {e}"
             ) from e
 
         try:
@@ -241,6 +243,54 @@ class TifffileStream(MultiPositionOMEStream):
             raise RuntimeError(
                 f"Failed to update OME metadata in {thread._path}"
             ) from e
+
+    # def _update_position_metadata(self, array_key: str, metadata: ome.OME) -> None:
+    #     """Add OME metadata to TIFF file efficiently without rewriting image data."""
+    #     thread = self._threads[array_key]
+    #     if not Path(thread._path).exists():  # pragma: no cover
+    #         warnings.warn(
+    #             f"TIFF file for array {array_key} does not exist at "
+    #             f"{thread._path}. Not writing metadata.",
+    #             stacklevel=2,
+    #         )
+    #         return
+
+    #     try:
+    #         # Extract position index from array key
+    #         if array_key.isdigit():
+    #             # Backward compatibility: array key is just a number
+    #             position_idx = int(array_key)
+    #         elif array_key.startswith("_p"):
+    #             # New format: extract position from _p0000_g0000 style key
+    #             # Find the position part after _p and before the next _
+    #             pos_part = array_key[2:]  # Skip "_p"
+    #             next_underscore = pos_part.find("_")
+    #             if next_underscore != -1:
+    #                 position_idx = int(pos_part[:next_underscore])
+    #             else:
+    #                 position_idx = int(pos_part)
+    #         else:
+    #             # Fallback for any other format
+    #             position_idx = 0
+
+    #         position_ome = _create_position_specific_ome(position_idx, metadata)
+    #         # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
+    #         # requires ASCII strings
+    #         ascii_xml = position_ome.to_xml().replace("µ", "&#x00B5;").encode("ascii")
+    #     except Exception as e:
+    #         raise RuntimeError(
+    #             f"Failed to create position-specific OME metadata for array "
+    #             f"{array_key}. {e}"
+    #         ) from e
+
+    #     try:
+    #         # TODO:
+    #         # consider a lock on the tiff file itself to prevent concurrent writes?
+    #         self._tf.tiffcomment(thread._path, comment=ascii_xml)
+    #     except Exception as e:
+    #         raise RuntimeError(
+    #             f"Failed to update OME metadata in {thread._path}"
+    #         ) from e
 
 
 class WriterThread(threading.Thread):
