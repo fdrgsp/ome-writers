@@ -8,7 +8,7 @@ from contextlib import suppress
 from itertools import count
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from typing_extensions import Self
 
@@ -26,6 +26,37 @@ if TYPE_CHECKING:
 else:
     with suppress(ImportError):
         import ome_types.model as ome
+
+
+class ArreyKeys(NamedTuple):
+    name: str
+
+    @property
+    def image_id(self) -> str:
+        """Convert array_key to image_id format.
+
+        Examples
+        --------
+        - "_p0000_g0001" -> "0:1"
+        - "_p0001" -> "1"
+        - "0" -> "0"
+        """
+        if self.name == "0":
+            return "0"
+
+        # Extract position indices from array_key like "_p0000_g0001_r0002"
+        # Split by underscore and parse dimension labels and values
+        parts = [p for p in self.name.split("_") if p]
+        indices = []
+        for part in parts:
+            if part and len(part) > 1:
+                # Extract numeric value (skip the dimension label character)
+                try:
+                    indices.append(str(int(part[1:])))
+                except ValueError:
+                    continue
+
+        return ":".join(indices) if indices else "0"
 
 
 class TifffileStream(MultiPositionOMEStream):
@@ -73,6 +104,32 @@ class TifffileStream(MultiPositionOMEStream):
         self._queues: dict[str, Queue[np.ndarray | None]] = {}
         self._is_active = False
 
+    def _array_key_to_image_id(self, array_key: str) -> str:
+        """Convert array_key to image_id format.
+
+        Examples
+        --------
+        - "_p0000_g0001" -> "0:1"
+        - "_p0001" -> "1"
+        - "0" -> "0"
+        """
+        if array_key == "0":
+            return "0"
+
+        # Extract position indices from array_key like "_p0000_g0001_r0002"
+        # Split by underscore and parse dimension labels and values
+        parts = [p for p in array_key.split("_") if p]
+        indices = []
+        for part in parts:
+            if part and len(part) > 1:
+                # Extract numeric value (skip the dimension label character)
+                try:
+                    indices.append(str(int(part[1:])))
+                except ValueError:
+                    continue
+
+        return ":".join(indices) if indices else "0"
+
     # ------------------------PUBLIC METHODS------------------------ #
 
     def create(
@@ -90,12 +147,17 @@ class TifffileStream(MultiPositionOMEStream):
         shape_5d = tuple(d.size for d in tczyx_dims)
 
         # Get unique array keys and prepare files
-        unique_array_keys = {key for key, _, _ in self._indices.values()}
+        unique_array_keys = {key for key, _ in self._indices.values()}
         fnames = self._prepare_files(self._path, sorted(unique_array_keys), overwrite)
 
         # Create a memmap for each array key
         for array_key, fname in zip(sorted(unique_array_keys), fnames, strict=True):
-            ome = dims_to_ome(tczyx_dims, dtype=dtype, tiff_file_name=fname)
+            # Convert array_key to image_id format
+            # e.g., "_p0000_g0001" -> "0:1", "0" -> "0"
+            image_id = self._array_key_to_image_id(array_key)
+            ome = dims_to_ome(
+                tczyx_dims, dtype=dtype, tiff_file_name=fname, image_id=image_id
+            )
             self._queues[array_key] = q = Queue()  # type: ignore
             self._threads[array_key] = thread = WriterThread(
                 fname,

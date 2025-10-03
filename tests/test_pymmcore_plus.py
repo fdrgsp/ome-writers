@@ -57,7 +57,7 @@ def test_pymmcore_plus_mda(tmp_path: Path, backend: AvailableBackend) -> None:
 
     # make assertions
     if backend.file_ext.endswith(".tiff"):
-        assert os.path.exists(str(dest).replace(".ome.tiff", "_p000.ome.tiff"))
+        assert os.path.exists(str(dest).replace(".ome.tiff", "_p0000.ome.tiff"))
     else:
         assert dest.exists()
 

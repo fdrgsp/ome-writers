@@ -112,9 +112,8 @@ class MultiPositionOMEStream(OMEStream):
         self._position_dim: Dimension | None = None
         # dimension info for other positional dimensions (like grid), if any
         self._positional_dims: list[Dimension] = []
-        # Mapping of indices to
-        # (array_key, non-position index, position-relative image index)
-        self._indices: dict[int, tuple[str, tuple[int, ...], int]] = {}
+        # Mapping of indices to (array_key, non-position index)
+        self._indices: dict[int, tuple[str, tuple[int, ...]]] = {}
         # number of times append() has been called
         self._append_count = 0
         # number of positions in the stream
@@ -176,9 +175,6 @@ class MultiPositionOMEStream(OMEStream):
         self._position_dim = position_dims[0] if position_dims else None
         self._positional_dims = positional_dims
 
-        # Track position-relative image index for multi-position acquisitions
-        position_image_counters: dict[int, int] = {}
-
         # Create array keys with format "_p0000_g0000_r0000" etc.
         self._indices = {}
         for i, values in range_iter:
@@ -211,11 +207,7 @@ class MultiPositionOMEStream(OMEStream):
                 # No positional dims at all (single acquisition)
                 array_key = "0"
 
-            # Get and increment position-relative image index
-            image_idx = position_image_counters.get(pos, 0)
-            position_image_counters[pos] = image_idx + 1
-
-            self._indices[i] = (array_key, tuple(idx), image_idx)
+            self._indices[i] = (array_key, tuple(idx))
 
         self._append_count = 0
         self._num_positions = num_positions
@@ -248,6 +240,6 @@ class MultiPositionOMEStream(OMEStream):
         if not self.is_active():
             msg = "Stream is closed or uninitialized. Call create() first."
             raise RuntimeError(msg)
-        array_key, index, _ = self._indices[self._append_count]
+        array_key, index = self._indices[self._append_count]
         self._write_to_backend(array_key, index, frame)
         self._append_count += 1

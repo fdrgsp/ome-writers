@@ -54,10 +54,23 @@ def dims_to_ome(
     dims: Sequence[Dimension],
     dtype: np.typing.DTypeLike,
     tiff_file_name: str | None = None,
+    image_id: int | str = 0,
 ) -> ome_types.OME:
     """Convert a sequence of Dimension objects to an OME object.
 
     This creates an OME representing a 5D image with the specified dimensions.
+
+    Parameters
+    ----------
+    dims : Sequence[Dimension]
+        Sequence of dimension information.
+    dtype : np.typing.DTypeLike
+        Data type for the image.
+    tiff_file_name : str | None, optional
+        Name of the TIFF file, by default None
+    image_id : int | str, optional
+        Unique identifier for this image. Can be an integer or string like "0:1:2"
+        for multi-axis datasets, by default 0
     """
     try:
         from ome_types import model as m
@@ -81,18 +94,22 @@ def dims_to_ome(
     )
 
     images: list[m.Image] = []
-    channels = [
-        m.Channel(
-            id=f"Channel:{i}",
-            name=f"Channel {i + 1}",
-            samples_per_pixel=1,  # TODO
-        )
-        for i in range(dims_sizes.get("c", 0))
-    ]
+    num_channels = dims_sizes.get("c", 0)
 
     uuid_ = f"urn:uuid:{uuid.uuid4()}"
 
     for p in range(n_positions):
+        # Create unique channels for each image
+        image_id_str = str(image_id)
+        channels = [
+            m.Channel(
+                id=f"Channel:{image_id_str}:{i}",
+                name=f"Channel {i + 1}",
+                samples_per_pixel=1,  # TODO
+            )
+            for i in range(num_channels)
+        ]
+
         planes: list[m.Plane] = []
         tiff_blocks: list[m.TiffData] = []
         ifd = 0
@@ -124,7 +141,7 @@ def dims_to_ome(
         md_only = None if tiff_blocks else m.MetadataOnly()
         pix_type = m.PixelType(np.dtype(dtype).name)  # try/catch
         pixels = m.Pixels(
-            id=f"Pixels:{p}",
+            id=f"Pixels:{image_id_str}",
             channels=channels,
             planes=planes,
             tiff_data_blocks=tiff_blocks,
@@ -145,11 +162,13 @@ def dims_to_ome(
             # physical_size_z_unit = UnitsLength.MICROMETER
         )
 
-        base_name = Path(tiff_file_name).stem if tiff_file_name else f"Image_{p}"
+        base_name = (
+            Path(tiff_file_name).stem if tiff_file_name else f"Image_{image_id_str}"
+        )
         images.append(
             m.Image(
                 # objective_settings=...
-                id=f"Image:{p}",
+                id=f"Image:{image_id_str}",
                 name=base_name + (f" (Series {p})" if n_positions > 1 else ""),
                 pixels=pixels,
                 # acquisition_date=acquisition_date,

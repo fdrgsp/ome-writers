@@ -29,8 +29,8 @@ def test_grid_only() -> None:
 
         print(f"Created stream with {len(stream._indices)} frames")
         print("Array keys:")
-        for i, (key, idx, img_idx) in stream._indices.items():
-            print(f"  Frame {i}: key={key}, idx={idx}, image_idx={img_idx}")
+        for i, (key, idx) in stream._indices.items():
+            print(f"  Frame {i}: key={key}, idx={idx}")
 
         stream.flush()
 
@@ -59,8 +59,8 @@ def test_position_and_grid() -> None:
         print(f"Positional dimensions: {[d.label for d in stream._positional_dims]}")
         print("\nArray keys (showing first 6):")
         for i in range(min(6, len(stream._indices))):
-            key, idx, img_idx = stream._indices[i]
-            print(f"  Frame {i}: key={key}, idx={idx}, image_idx={img_idx}")
+            key, idx = stream._indices[i]
+            print(f"  Frame {i}: key={key}, idx={idx}")
 
         stream.flush()
 
@@ -91,24 +91,8 @@ def test_position_grid_region() -> None:
         print(f"Number of positions: {stream._num_positions}")
         print(f"Positional dimensions: {[d.label for d in stream._positional_dims]}")
         print("\nArray keys:")
-        for i, (key, idx, img_idx) in stream._indices.items():
-            print(f"  Frame {i}: key={key}, idx={idx}, image_idx={img_idx}")
-
-        # Verify image indices reset per position
-        print("\n=== Verifying position-relative image indices ===")
-        pos_0_keys = [
-            (k, img_idx)
-            for k, _, img_idx in stream._indices.values()
-            if k.startswith("_p0000")
-        ]
-        pos_1_keys = [
-            (k, img_idx)
-            for k, _, img_idx in stream._indices.values()
-            if k.startswith("_p0001")
-        ]
-
-        print(f"Position 0 image indices: {[img_idx for _, img_idx in pos_0_keys]}")
-        print(f"Position 1 image indices: {[img_idx for _, img_idx in pos_1_keys]}")
+        for i, (key, idx) in stream._indices.items():
+            print(f"  Frame {i}: key={key}, idx={idx}")
 
         stream.flush()
 
@@ -134,10 +118,10 @@ def test_zarr_with_positional_dims() -> None:
 
         print(f"Created Zarr stream with {len(stream._indices)} frames")
         print("Array keys (unique):")
-        unique_keys = sorted({key for key, _, _ in stream._indices.values()})
+        unique_keys = sorted({key for key, _ in stream._indices.values()})
         for key in unique_keys:
             # Count how many images per array
-            count = sum(1 for k, _, _ in stream._indices.values() if k == key)
+            count = sum(1 for k, _ in stream._indices.values() if k == key)
             print(f"  {key}: {count} frames")
 
         stream.flush()
