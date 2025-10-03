@@ -73,9 +73,111 @@ class TifffileStream(MultiPositionOMEStream):
         self._queues: dict[str, Queue[np.ndarray | None]] = {}
         # Mapping from array_key to FrameIndex for metadata operations
         self._array_key_to_frame_idx: dict[str, FrameIndex] = {}
+        # Additional positional dimensions (g, r, etc.) for multi-axis support
+        self._positional_dims: list[Dimension] = []
         self._is_active = False
 
     # ------------------------PUBLIC METHODS------------------------ #
+
+    def _init_positions(
+        self, dimensions: Sequence[Dimension]
+    ) -> tuple[int, Sequence[Dimension]]:
+        """Initialize position tracking with multi-axis support for TIFF backend.
+
+        This override extends the base implementation to support additional
+        positional dimensions (g, r, etc.) beyond the standard 'p' dimension.
+        These positional dimensions are used to create hierarchical Image IDs
+        in OME metadata (e.g., "Image:0:1" for position 0, grid 1).
+
+        This method separates dimensions into three categories:
+        1. Standard dimensions (x, y, t, c, z) - used for array indexing
+        2. Position dimension (p) - primary positional dimension
+        3. Positional dimensions (g, r, etc.) - additional positional organization
+
+        Positional dimensions (p, g, r, etc.) are used to create separate arrays
+        with keys like "_p0000_g0001_r0002", while standard dimensions are used
+        for indexing within each array.
+
+        Returns
+        -------
+        tuple[int, Sequence[Dimension]]
+            The number of positions and the non-position dimensions.
+        """
+        from itertools import product
+
+        from ome_writers._stream_base import STANDARD_DIMS
+
+        # Separate position dimension from other dimensions
+        position_dims = [d for d in dimensions if d.label == "p"]
+        # Find non-standard dimensions (excluding position) for positional organization
+        positional_dims = [
+            d for d in dimensions if d.label not in STANDARD_DIMS and d.label != "p"
+        ]
+        # Standard processing dimensions (t, c, z - excluding spatial x, y)
+        non_position_dims = [
+            d for d in dimensions if d.label in STANDARD_DIMS and d.label != "p"
+        ]
+
+        # Create ranges for non-spatial standard dimensions (for indexing)
+        non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
+
+        # get number of positions (first dimension if multiple position_dims or 1)
+        num_positions = position_dims[0].size if position_dims else 1
+
+        # Create ranges for all positional dimensions in consistent order
+        positional_ranges = [range(d.size) for d in positional_dims]
+
+        # Create the cartesian product for all combinations
+        # Order: position (if exists), then positional dims, then processing dims
+        if position_dims:
+            range_iter = enumerate(
+                product(range(num_positions), *positional_ranges, *non_p_ranges)
+            )
+        else:
+            range_iter = enumerate(product(*positional_ranges, *non_p_ranges))
+
+        self._position_dim = position_dims[0] if position_dims else None
+        self._positional_dims = positional_dims
+
+        # Create array keys with format "_p0000_g0000_r0000" etc.
+        self._indices = {}
+        for i, values in range_iter:
+            array_key_parts = []
+
+            if position_dims:
+                pos = values[0]
+                array_key_parts.append(f"_p{pos:04d}")
+                remaining_values = values[1:]
+            else:
+                pos = 0  # Default to position 0 for non-multi-position
+                remaining_values = values
+
+            # Add positional dimension parts
+            for j, dim in enumerate(positional_dims):
+                if j < len(remaining_values):
+                    val = remaining_values[j]
+                    array_key_parts.append(f"_{dim.label}{val:04d}")
+
+            # Calculate the index for non-positional dimensions
+            positional_count = len(positional_dims)
+            if position_dims:
+                positional_count += 1
+            idx = remaining_values[len(positional_dims) :] if remaining_values else []
+
+            # Create the final array key
+            if array_key_parts:
+                array_key = "".join(array_key_parts)
+            else:
+                # No positional dims at all (single acquisition)
+                array_key = "0"
+
+            self._indices[i] = FrameIndex(array_key, tuple(idx))
+
+        self._append_count = 0
+        self._num_positions = num_positions
+        self._non_position_dims = non_position_dims
+
+        return num_positions, non_position_dims
 
     def create(
         self,

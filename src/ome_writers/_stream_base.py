@@ -162,16 +162,13 @@ class MultiPositionOMEStream(OMEStream):
     def __init__(self) -> None:
         # dimension info for position dimension, if any
         self._position_dim: Dimension | None = None
-        # dimension info for other positional dimensions (like grid), if any
-        self._positional_dims: list[Dimension] = []
         # Mapping of frame indices to FrameIndex objects
         self._indices: dict[int, FrameIndex] = {}
         # number of times append() has been called
         self._append_count = 0
         # number of positions in the stream
         self._num_positions = 0
-        # non-position dimensions
-        # (e.g. time, z, c, y, x) that are not
+        # non-position dimensions (e.g. time, z, c, y, x)
         self._non_position_dims: Sequence[Dimension] = []
 
     def _init_positions(
@@ -179,13 +176,12 @@ class MultiPositionOMEStream(OMEStream):
     ) -> tuple[int, Sequence[Dimension]]:
         """Initialize position tracking and return num_positions, non_position_dims.
 
-        This method separates dimensions into three categories:
+        This method separates dimensions into two categories:
         1. Standard dimensions (x, y, t, c, z) - used for array indexing
-        2. Position dimension (p) - primary positional dimension
-        3. Positional dimensions (g, r, etc.) - additional positional organization
+        2. Position dimension (p) - for multi-position acquisitions
 
-        Positional dimensions (p, g, r, etc.) are used to create separate arrays
-        with keys like "_p0000_g0001_r0002", while standard dimensions are used
+        The position dimension is used to create separate arrays with keys
+        like "_p0000", "_p0001", etc., while standard dimensions are used
         for indexing within each array.
 
         Returns
@@ -195,14 +191,8 @@ class MultiPositionOMEStream(OMEStream):
         """
         # Separate position dimension from other dimensions
         position_dims = [d for d in dimensions if d.label == "p"]
-        # Find non-standard dimensions (excluding position) for positional organization
-        positional_dims = [
-            d for d in dimensions if d.label not in STANDARD_DIMS and d.label != "p"
-        ]
-        # Standard processing dimensions (t, c, z - excluding spatial x, y)
-        non_position_dims = [
-            d for d in dimensions if d.label in STANDARD_DIMS and d.label != "p"
-        ]
+        # Standard processing dimensions (all non-position dims)
+        non_position_dims = [d for d in dimensions if d.label != "p"]
 
         # Create ranges for non-spatial standard dimensions (for indexing)
         non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
@@ -210,55 +200,25 @@ class MultiPositionOMEStream(OMEStream):
         # get number of positions (first dimension if multiple position_dims or 1)
         num_positions = position_dims[0].size if position_dims else 1
 
-        # Create ranges for all positional dimensions in consistent order
-        positional_ranges = [range(d.size) for d in positional_dims]
-
         # Create the cartesian product for all combinations
-        # Order: position (if exists), then positional dims, then processing dims
+        # Order: position (if exists), then processing dims
         if position_dims:
-            range_iter = enumerate(
-                product(range(num_positions), *positional_ranges, *non_p_ranges)
-            )
+            range_iter = enumerate(product(range(num_positions), *non_p_ranges))
+            # When there's a position dimension, extract pos from the product
+            self._indices = {}
+            for i, (pos, *idx) in range_iter:
+                array_key = str(pos)
+                self._indices[i] = FrameIndex(array_key, tuple(idx))
         else:
-            range_iter = enumerate(product(*positional_ranges, *non_p_ranges))
+            range_iter = enumerate(product(*non_p_ranges))
+            # When there's no position dimension, all data goes to array "0"
+            self._indices = {}
+            for i, idx_tuple in range_iter:
+                self._indices[i] = FrameIndex("0", idx_tuple)
 
         self._position_dim = position_dims[0] if position_dims else None
-        self._positional_dims = positional_dims
 
-        # Create array keys with format "_p0000_g0000_r0000" etc.
-        self._indices = {}
-        for i, values in range_iter:
-            array_key_parts = []
-
-            if position_dims:
-                pos = values[0]
-                array_key_parts.append(f"_p{pos:04d}")
-                remaining_values = values[1:]
-            else:
-                pos = 0  # Default to position 0 for non-multi-position
-                remaining_values = values
-
-            # Add positional dimension parts
-            for j, dim in enumerate(positional_dims):
-                if j < len(remaining_values):
-                    val = remaining_values[j]
-                    array_key_parts.append(f"_{dim.label}{val:04d}")
-
-            # Calculate the index for non-positional dimensions
-            positional_count = len(positional_dims)
-            if position_dims:
-                positional_count += 1
-            idx = remaining_values[len(positional_dims) :] if remaining_values else []
-
-            # Create the final array key
-            if array_key_parts:
-                array_key = "".join(array_key_parts)
-            else:
-                # No positional dims at all (single acquisition)
-                array_key = "0"
-
-            self._indices[i] = FrameIndex(array_key, tuple(idx))
-
+        # Create array keys as simple position indices: "0", "1", "2", etc.
         self._append_count = 0
         self._num_positions = num_positions
         self._non_position_dims = non_position_dims

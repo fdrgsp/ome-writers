@@ -197,38 +197,29 @@ def test_zarr_with_positional_dims() -> None:
         # Should have 2 positions
         assert stream._num_positions == 2
 
-        # Should have grid as positional dimension
-        assert len(stream._positional_dims) == 1
-        assert stream._positional_dims[0].label == "g"
+        # Grid dimension is now in non_position_dims (not special for Zarr)
+        non_pos_labels = [d.label for d in stream._non_position_dims]
+        assert "g" in non_pos_labels
+        assert "t" in non_pos_labels
 
         # Get unique array keys
         unique_keys = sorted(
             {frame_idx.array_key for frame_idx in stream._indices.values()}
         )
 
-        # Should have 4 unique arrays (2 positions x 2 grids)
-        assert len(unique_keys) == 4
-        expected_keys = ["_p0000_g0000", "_p0000_g0001", "_p0001_g0000", "_p0001_g0001"]
+        # Should have 2 unique arrays (only 2 positions, g is a regular dimension)
+        assert len(unique_keys) == 2
+        expected_keys = ["0", "1"]  # Simple position indices for Zarr
         assert unique_keys == expected_keys
 
-        # Each array should have 2 frames (2 timepoints)
+        # Each array should have 4 frames (2 grids x 2 timepoints)
         for key in unique_keys:
             count = sum(
                 1
                 for frame_idx in stream._indices.values()
                 if frame_idx.array_key == key
             )
-            assert count == 2
-
-        # Check image_id conversion
-        frame_0 = next(
-            f for f in stream._indices.values() if f.array_key == "_p0000_g0000"
-        )
-        assert frame_0.image_id == "0:0"
-        frame_1 = next(
-            f for f in stream._indices.values() if f.array_key == "_p0001_g0001"
-        )
-        assert frame_1.image_id == "1:1"
+            assert count == 4
 
         print(f"✓ Created Zarr stream with {len(stream._indices)} frames")
         print(f"  Unique array keys: {len(unique_keys)}")
@@ -239,3 +230,4 @@ def test_zarr_with_positional_dims() -> None:
                 if frame_idx.array_key == key
             )
             print(f"  {key}: {count} frames")
+

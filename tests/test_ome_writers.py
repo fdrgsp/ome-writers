@@ -190,10 +190,10 @@ def test_multiposition_acquisition(backend: AvailableBackend, tmp_path: Path) ->
 
     if backend.file_ext.endswith("zarr"):
         assert output_path.exists()
-        # Verify zarr structure
-        assert (output_path / "_p0000").exists()
-        assert (output_path / "_p0001").exists()
-        assert (output_path / "_p0002").exists()
+        # Verify zarr structure - folders are named with simple indices: "0", "1", "2"
+        assert (output_path / "0").exists()
+        assert (output_path / "1").exists()
+        assert (output_path / "2").exists()
         assert (output_path / "zarr.json").exists()
 
         # Verify that each position has correct metadata
