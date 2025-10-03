@@ -106,13 +106,13 @@ class PYMMCP:
         @core.mda.events.sequenceFinished.connect
         def _on_sequence_finished(sequence: useq.MDASequence) -> None:
             self._stream.flush()
-            if hasattr(self._stream, "update_ome_metadata"):
-                ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
+            # if hasattr(self._stream, "update_ome_metadata"):
+            # ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
 
-                # from rich import print
-                # print(ome.to_xml())
+            # from rich import print
+            # print(ome.to_xml())
 
-                self._stream.update_ome_metadata(ome)
+            # self._stream.update_ome_metadata(ome)
 
     def run(self) -> None:
         self._core.mda.run(self._seq)
@@ -134,7 +134,7 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
         channels=["DAPI", "FITC"],  # type: ignore
         # WITH GRID
         stage_positions=[(0, 0), (0.1, 0.1)],  # type: ignore
-        grid_plan=useq.GridRowsColumns(rows=1, columns=2)
+        grid_plan=useq.GridRowsColumns(rows=1, columns=2),
         # WITH WELL PLATE
         # stage_positions=useq.WellPlatePlan(
         #     plate=useq.WellPlate.from_str("96-well"),

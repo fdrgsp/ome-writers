@@ -56,7 +56,7 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         self._create_group(self._normalize_path(path), dimensions)
 
         # Create stores for each unique array key
-        unique_array_keys = {key for key, _ in self._indices.values()}
+        unique_array_keys = {key for key, _, _ in self._indices.values()}
         for array_key in sorted(unique_array_keys):
             spec = self._create_spec(dtype, non_position_dims, array_key)
             try:
@@ -119,7 +119,7 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         array_dims: dict[str, Sequence[Dimension]] = {}
 
         # Get all array keys from the indices mapping
-        for array_key, _ in self._indices.values():
+        for array_key, _, _ in self._indices.values():
             if array_key not in array_dims:
                 self._array_paths[array_key] = self._group_path / array_key
                 # Use non_position_dims for multi-pos, full dims for single pos

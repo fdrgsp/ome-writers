@@ -112,8 +112,9 @@ class MultiPositionOMEStream(OMEStream):
         self._position_dim: Dimension | None = None
         # dimension info for other positional dimensions (like grid), if any
         self._positional_dims: list[Dimension] = []
-        # A mapping of indices to (array_key, non-position index)
-        self._indices: dict[int, tuple[str, tuple[int, ...]]] = {}
+        # Mapping of indices to
+        # (array_key, non-position index, position-relative image index)
+        self._indices: dict[int, tuple[str, tuple[int, ...], int]] = {}
         # number of times append() has been called
         self._append_count = 0
         # number of positions in the stream
@@ -166,6 +167,9 @@ class MultiPositionOMEStream(OMEStream):
         self._position_dim = position_dims[0] if position_dims else None
         self._positional_dims = positional_dims
 
+        # Track position-relative image index for multi-position acquisitions
+        position_image_counters: dict[int, int] = {}
+
         # Create array keys with format "_p000_g000_r000" etc.
         self._indices = {}
         for i, values in range_iter:
@@ -176,6 +180,7 @@ class MultiPositionOMEStream(OMEStream):
                 array_key_parts.append(f"_p{pos:04d}")
                 remaining_values = values[1:]
             else:
+                pos = 0  # Default to position 0 for non-multi-position
                 remaining_values = values
 
             # Add positional dimension parts
@@ -204,7 +209,11 @@ class MultiPositionOMEStream(OMEStream):
             if position_dims and not positional_dims and values:
                 array_key = str(values[0])
 
-            self._indices[i] = (array_key, tuple(idx))
+            # Get and increment position-relative image index
+            image_idx = position_image_counters.get(pos, 0)
+            position_image_counters[pos] = image_idx + 1
+
+            self._indices[i] = (array_key, tuple(idx), image_idx)
 
         self._append_count = 0
         self._num_positions = num_positions
@@ -242,6 +251,6 @@ class MultiPositionOMEStream(OMEStream):
         if not self.is_active():
             msg = "Stream is closed or uninitialized. Call create() first."
             raise RuntimeError(msg)
-        array_key, index = self._indices[self._append_count]
+        array_key, index, _ = self._indices[self._append_count]
         self._write_to_backend(array_key, index, frame)
         self._append_count += 1

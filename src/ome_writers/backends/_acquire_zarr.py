@@ -69,7 +69,7 @@ class AcquireZarrStream(MultiPositionOMEStream):
         self._az_dims_keepalive = az_dims
 
         # Create AcquireZarr array settings for each unique array key
-        unique_array_keys = {key for key, _ in self._indices.values()}
+        unique_array_keys = {key for key, _, _ in self._indices.values()}
         az_array_settings = [
             self._aqz_pos_array(array_key, az_dims, dtype)
             for array_key in sorted(unique_array_keys)

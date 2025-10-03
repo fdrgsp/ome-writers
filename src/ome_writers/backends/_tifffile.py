@@ -89,7 +89,7 @@ class TifffileStream(MultiPositionOMEStream):
         shape_5d = tuple(d.size for d in tczyx_dims)
 
         # Get unique array keys and prepare files
-        unique_array_keys = {key for key, _ in self._indices.values()}
+        unique_array_keys = {key for key, _, _ in self._indices.values()}
         fnames = self._prepare_files(self._path, sorted(unique_array_keys), overwrite)
 
         # Create a memmap for each array key
