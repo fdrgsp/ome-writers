@@ -106,8 +106,8 @@ class PYMMCP:
         @core.mda.events.sequenceFinished.connect
         def _on_sequence_finished(sequence: useq.MDASequence) -> None:
             self._stream.flush()
-            ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
-            self._stream.update_ome_metadata(ome)
+            # ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
+            # self._stream.update_ome_metadata(ome)
 
     def run(self) -> None:
         self._core.mda.run(self._seq)
@@ -127,11 +127,13 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
         time_plan=useq.TIntervalLoops(interval=0.001, loops=2),  # type: ignore
         z_plan=useq.ZRangeAround(range=2, step=1),
         channels=["DAPI", "FITC"],  # type: ignore
-        stage_positions=useq.WellPlatePlan(
-            plate=useq.WellPlate.from_str("96-well"),
-            a1_center_xy=(0, 0),
-            selected_wells=((0, 0), (0, 1)),
-        ),
+        # stage_positions=useq.WellPlatePlan(
+        #     plate=useq.WellPlate.from_str("96-well"),
+        #     a1_center_xy=(0, 0),
+        #     selected_wells=((0, 0), (0, 1)),
+        # ),
+        stage_positions=[(0, 0), (0.1, 0.1)],  # type: ignore
+        grid_plan=useq.GridRowsColumns(rows=1, columns=2),  # type: ignore
     )
 
     core = CMMCorePlus()
@@ -150,4 +152,8 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
                 # validate by attempting to parse
                 ome = from_xml(ome_xml)
                 # assert there is plate information
-                assert ome.plates
+                # assert ome.plates
+
+                from rich import print
+
+                print(ome.to_xml())

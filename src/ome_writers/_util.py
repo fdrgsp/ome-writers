@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from itertools import product
-from typing import TYPE_CHECKING, cast, get_args
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -16,8 +16,9 @@ if TYPE_CHECKING:
     from ome_writers import UnitTuple
 
 
-VALID_LABELS = get_args(DimensionLabel)
-DEFAULT_UNITS: Mapping[DimensionLabel, UnitTuple | None] = {
+# Standard dimension labels that have default units
+STANDARD_LABELS = {"x", "y", "z", "t", "c", "p"}
+DEFAULT_UNITS: Mapping[str, UnitTuple | None] = {
     "t": (1.0, "s"),
     "z": (1.0, "um"),
     "y": (1.0, "um"),
@@ -53,10 +54,7 @@ def fake_data_for_sizes(
     """
     if not {"y", "x"} <= sizes.keys():  # pragma: no cover
         raise ValueError("sizes must include both 'y' and 'x'")
-    if not all(k in VALID_LABELS for k in sizes):  # pragma: no cover
-        raise ValueError(
-            f"Invalid dimension labels in sizes: {sizes.keys() - set(VALID_LABELS)}"
-        )
+    # Note: We now support arbitrary dimension labels beyond standard ones
 
     _chunk_sizes = dict(chunk_sizes or {})
     _chunk_sizes.setdefault("y", sizes["y"])
@@ -158,9 +156,9 @@ def dims_from_useq(
         if size:
             # all of the useq axes are the same as the ones used here.
             dim_label = cast("DimensionLabel", str(ax))
-            if dim_label not in _units:
-                raise ValueError(f"Unsupported axis for OME: {ax}")
-            dims.append(Dimension(label=dim_label, size=size, unit=_units[dim_label]))
+            # Use default units if available, otherwise None for custom dimensions
+            unit = _units.get(dim_label, None)
+            dims.append(Dimension(label=dim_label, size=size, unit=unit))
 
     return [
         *dims,

@@ -110,8 +110,11 @@ class MultiPositionOMEStream(OMEStream):
     def __init__(self) -> None:
         # dimension info for position dimension, if any
         self._position_dim: Dimension | None = None
-        # A mapping of indices to (array_key, non-position index)
-        self._indices: dict[int, tuple[str, tuple[int, ...]]] = {}
+        # dimension info for other positional dimensions (like grid), if any
+        self._positional_dims: list[Dimension] = []
+        # Mapping of indices to
+        # (array_key, non-position index, position-relative image index)
+        self._indices: dict[int, tuple[str, tuple[int, ...], int]] = {}
         # number of times append() has been called
         self._append_count = 0
         # number of positions in the stream
@@ -125,20 +128,95 @@ class MultiPositionOMEStream(OMEStream):
     ) -> tuple[int, Sequence[Dimension]]:
         """Initialize position tracking and return num_positions, non_position_dims.
 
+        This method separates dimensions into three categories:
+        1. Standard dimensions (x, y, t, c, z) - used for array indexing
+        2. Position dimension (p) - primary positional dimension
+        3. Positional dimensions (g, r, etc.) - additional positional organization
+
+        Positional dimensions (p, g, r, etc.) are used to create separate arrays
+        with keys like "_p0000_g0001_r0002", while standard dimensions are used
+        for indexing within each array.
+
         Returns
         -------
         tuple[int, Sequence[Dimension]]
             The number of positions and the non-position dimensions.
         """
+        # Standard dimensions that don't affect array organization
+        standard_dims = {"x", "y", "t", "c", "z"}
+
         # Separate position dimension from other dimensions
         position_dims = [d for d in dimensions if d.label == "p"]
-        non_position_dims = [d for d in dimensions if d.label != "p"]
-        num_positions = position_dims[0].size if position_dims else 1
+        # Find non-standard dimensions (excluding position) for positional organization
+        positional_dims = [
+            d for d in dimensions if d.label not in standard_dims and d.label != "p"
+        ]
+        # Standard processing dimensions (t, c, z - excluding spatial x, y)
+        non_position_dims = [
+            d for d in dimensions if d.label in standard_dims and d.label != "p"
+        ]
+
+        # Create ranges for non-spatial standard dimensions (for indexing)
         non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
-        range_iter = enumerate(product(range(num_positions), *non_p_ranges))
+
+        num_positions = position_dims[0].size if position_dims else 1
+
+        # Create ranges for all positional dimensions in consistent order
+        positional_ranges = [range(d.size) for d in positional_dims]
+
+        # Create the cartesian product for all combinations
+        # Order: position (if exists), then positional dims, then processing dims
+        if position_dims:
+            range_iter = enumerate(
+                product(range(num_positions), *positional_ranges, *non_p_ranges)
+            )
+        else:
+            range_iter = enumerate(product(*positional_ranges, *non_p_ranges))
 
         self._position_dim = position_dims[0] if position_dims else None
-        self._indices = {i: (str(pos), tuple(idx)) for i, (pos, *idx) in range_iter}
+        self._positional_dims = positional_dims
+
+        # Track position-relative image index for multi-position acquisitions
+        position_image_counters: dict[int, int] = {}
+
+        # Create array keys with format "_p0000_g0000_r0000" etc.
+        self._indices = {}
+        for i, values in range_iter:
+            array_key_parts = []
+
+            if position_dims:
+                pos = values[0]
+                array_key_parts.append(f"_p{pos:04d}")
+                remaining_values = values[1:]
+            else:
+                pos = 0  # Default to position 0 for non-multi-position
+                remaining_values = values
+
+            # Add positional dimension parts
+            for j, dim in enumerate(positional_dims):
+                if j < len(remaining_values):
+                    val = remaining_values[j]
+                    array_key_parts.append(f"_{dim.label}{val:04d}")
+
+            # Calculate the index for non-positional dimensions
+            positional_count = len(positional_dims)
+            if position_dims:
+                positional_count += 1
+            idx = remaining_values[len(positional_dims) :] if remaining_values else []
+
+            # Create the final array key
+            if array_key_parts:
+                array_key = "".join(array_key_parts)
+            else:
+                # No positional dims at all (single acquisition)
+                array_key = "0"
+
+            # Get and increment position-relative image index
+            image_idx = position_image_counters.get(pos, 0)
+            position_image_counters[pos] = image_idx + 1
+
+            self._indices[i] = (array_key, tuple(idx), image_idx)
+
         self._append_count = 0
         self._num_positions = num_positions
         self._non_position_dims = non_position_dims
@@ -170,6 +248,6 @@ class MultiPositionOMEStream(OMEStream):
         if not self.is_active():
             msg = "Stream is closed or uninitialized. Call create() first."
             raise RuntimeError(msg)
-        array_key, index = self._indices[self._append_count]
+        array_key, index, _ = self._indices[self._append_count]
         self._write_to_backend(array_key, index, frame)
         self._append_count += 1

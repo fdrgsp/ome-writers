@@ -17,8 +17,10 @@ OME_DIM_TYPE = {"y": "space", "x": "space", "z": "space", "t": "time", "c": "cha
 OME_UNIT = {"um": "micrometer", "ml": "milliliter", "s": "second", None: "unknown"}
 
 
-# Recognized dimension labels
-DimensionLabel: TypeAlias = Literal["x", "y", "z", "t", "c", "p", "other"]
+# Recognized dimension labels - now supports arbitrary strings
+# Standard OME dimensions: x, y, z, t, c, p
+# Common positional dimensions: g (grid), r (region), s (site), etc.
+DimensionLabel: TypeAlias = str
 # UnitTuple is a tuple of (scale, unit); e.g. (1, "s")
 UnitTuple: TypeAlias = tuple[float, str]
 
