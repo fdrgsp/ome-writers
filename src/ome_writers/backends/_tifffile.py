@@ -8,12 +8,12 @@ from contextlib import suppress
 from itertools import count
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
 from ome_writers._dimensions import dims_to_ome
-from ome_writers._stream_base import MultiPositionOMEStream
+from ome_writers._stream_base import FrameIndex, MultiPositionOMEStream
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -26,37 +26,6 @@ if TYPE_CHECKING:
 else:
     with suppress(ImportError):
         import ome_types.model as ome
-
-
-class ArreyKeys(NamedTuple):
-    name: str
-
-    @property
-    def image_id(self) -> str:
-        """Convert array_key to image_id format.
-
-        Examples
-        --------
-        - "_p0000_g0001" -> "0:1"
-        - "_p0001" -> "1"
-        - "0" -> "0"
-        """
-        if self.name == "0":
-            return "0"
-
-        # Extract position indices from array_key like "_p0000_g0001_r0002"
-        # Split by underscore and parse dimension labels and values
-        parts = [p for p in self.name.split("_") if p]
-        indices = []
-        for part in parts:
-            if part and len(part) > 1:
-                # Extract numeric value (skip the dimension label character)
-                try:
-                    indices.append(str(int(part[1:])))
-                except ValueError:
-                    continue
-
-        return ":".join(indices) if indices else "0"
 
 
 class TifffileStream(MultiPositionOMEStream):
@@ -102,33 +71,9 @@ class TifffileStream(MultiPositionOMEStream):
         # and other positional acquisitions
         self._threads: dict[str, WriterThread] = {}
         self._queues: dict[str, Queue[np.ndarray | None]] = {}
+        # Mapping from array_key to FrameIndex for metadata operations
+        self._array_key_to_frame_idx: dict[str, FrameIndex] = {}
         self._is_active = False
-
-    def _array_key_to_image_id(self, array_key: str) -> str:
-        """Convert array_key to image_id format.
-
-        Examples
-        --------
-        - "_p0000_g0001" -> "0:1"
-        - "_p0001" -> "1"
-        - "0" -> "0"
-        """
-        if array_key == "0":
-            return "0"
-
-        # Extract position indices from array_key like "_p0000_g0001_r0002"
-        # Split by underscore and parse dimension labels and values
-        parts = [p for p in array_key.split("_") if p]
-        indices = []
-        for part in parts:
-            if part and len(part) > 1:
-                # Extract numeric value (skip the dimension label character)
-                try:
-                    indices.append(str(int(part[1:])))
-                except ValueError:
-                    continue
-
-        return ":".join(indices) if indices else "0"
 
     # ------------------------PUBLIC METHODS------------------------ #
 
@@ -147,14 +92,20 @@ class TifffileStream(MultiPositionOMEStream):
         shape_5d = tuple(d.size for d in tczyx_dims)
 
         # Get unique array keys and prepare files
-        unique_array_keys = {key for key, _ in self._indices.values()}
+        unique_array_keys = {
+            frame_idx.array_key for frame_idx in self._indices.values()
+        }
         fnames = self._prepare_files(self._path, sorted(unique_array_keys), overwrite)
+
+        # Create a mapping from array_key to FrameIndex for metadata operations
+        self._array_key_to_frame_idx = {
+            frame_idx.array_key: frame_idx for frame_idx in self._indices.values()
+        }
 
         # Create a memmap for each array key
         for array_key, fname in zip(sorted(unique_array_keys), fnames, strict=True):
-            # Convert array_key to image_id format
-            # e.g., "_p0000_g0001" -> "0:1", "0" -> "0"
-            image_id = self._array_key_to_image_id(array_key)
+            # Get image_id from FrameIndex
+            image_id = self._array_key_to_frame_idx[array_key].image_id
             ome = dims_to_ome(
                 tczyx_dims, dtype=dtype, tiff_file_name=fname, image_id=image_id
             )
@@ -262,19 +213,13 @@ class TifffileStream(MultiPositionOMEStream):
             return
 
         try:
-            # Extract position index from array_key
-            # For keys like "_p0000" or "_p0001_g0002", extract the position number
-            if array_key.startswith("_p"):
-                # Extract position number from "_pXXXX..."
-                position_idx = int(array_key[2:6])
-            elif array_key.isdigit():
-                # Old-style simple numeric keys (backward compat - though not needed)
-                position_idx = int(array_key)
-            else:
-                # For single acquisitions with key="0" or no position dimension
-                position_idx = 0
+            # Get the FrameIndex from the mapping
+            frame_idx = self._array_key_to_frame_idx[array_key]
+            # Use the image_id property from FrameIndex
+            image_id = frame_idx.image_id
 
-            position_ome = _create_position_specific_ome(position_idx, metadata)
+            # Create position-specific OME metadata using the full image_id
+            position_ome = _create_position_specific_ome(image_id, metadata)
             # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
             # requires ASCII strings
             ascii_xml = position_ome.to_xml().replace("µ", "&#x00B5;").encode("ascii")
@@ -358,14 +303,16 @@ thread_counter = count()
 
 # helpers for position-specific OME metadata updates
 
-
-def _create_position_specific_ome(position_idx: int, metadata: ome.OME) -> ome.OME:
+def _create_position_specific_ome(image_id: str, metadata: ome.OME) -> ome.OME:
     """Create OME metadata for a specific position from complete metadata.
 
-    Extracts only the Image and related metadata for the given position index.
-    Assumes Image IDs follow the pattern "Image:{position_idx}".
+    Extracts only the Image and related metadata for the given image_id.
+    Image IDs follow the pattern "Image:{image_id}" where image_id can be:
+    - Simple: "0", "1", "2" (single position)
+    - Multi-axis: "0:0", "0:1", "1:0" (position:grid format)
+    - Three-axis: "0:0:0", "0:1:2" (position:grid:other format)
     """
-    target_image_id = f"Image:{position_idx}"
+    target_image_id = f"Image:{image_id}"
 
     # Find an image by its ID in the given list of images
     # will raise StopIteration if not found (caller should catch error)

@@ -24,15 +24,38 @@ def test_grid_only() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         stream = omew.TifffileStream()
         stream.create(
-            str(Path(tmpdir) / "grid_only.ome.tiff"), np.dtype("uint16"), dimensions
+            str(Path(tmpdir) / "grid_only.ome.tiff"),
+            np.dtype("uint16"),
+            dimensions,
         )
 
-        print(f"Created stream with {len(stream._indices)} frames")
-        print("Array keys:")
-        for i, (key, idx) in stream._indices.items():
-            print(f"  Frame {i}: key={key}, idx={idx}")
+        # Should have 2 grids x 2 timepoints = 4 frames
+        assert len(stream._indices) == 4
 
-        stream.flush()
+        # Should have 1 "position" (no p dimension)
+        assert stream._num_positions == 1
+
+        # Should have grid as positional dimension
+        assert len(stream._positional_dims) == 1
+        assert stream._positional_dims[0].label == "g"
+
+        # Check array keys are correct
+        assert stream._indices[0].array_key == "_g0000"
+        assert stream._indices[0].dim_index == (0, 0)  # (t=0, c=0)
+        assert stream._indices[1].array_key == "_g0000"
+        assert stream._indices[1].dim_index == (1, 0)  # (t=1, c=0)
+        assert stream._indices[2].array_key == "_g0001"
+        assert stream._indices[2].dim_index == (0, 0)
+        assert stream._indices[3].array_key == "_g0001"
+        assert stream._indices[3].dim_index == (1, 0)
+
+        # Check image_id conversion
+        assert stream._indices[0].image_id == "0"
+        assert stream._indices[2].image_id == "1"
+
+        print(f"✓ Created stream with {len(stream._indices)} frames")
+        for i, frame_idx in stream._indices.items():
+            print(f"  Frame {i}: key={frame_idx.array_key}, idx={frame_idx.dim_index}")
 
 
 def test_position_and_grid() -> None:
@@ -51,28 +74,49 @@ def test_position_and_grid() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         stream = omew.TifffileStream()
         stream.create(
-            str(Path(tmpdir) / "pos_grid.ome.tiff"), np.dtype("uint16"), dimensions
+            str(Path(tmpdir) / "pos_grid.ome.tiff"),
+            np.dtype("uint16"),
+            dimensions,
         )
 
-        print(f"Created stream with {len(stream._indices)} frames")
-        print(f"Number of positions: {stream._num_positions}")
-        print(f"Positional dimensions: {[d.label for d in stream._positional_dims]}")
-        print("\nArray keys (showing first 6):")
+        # Should have 2 positions x 3 grids x 2 timepoints = 12 frames
+        assert len(stream._indices) == 12
+
+        # Should have 2 positions
+        assert stream._num_positions == 2
+
+        # Should have grid as positional dimension (not p)
+        assert len(stream._positional_dims) == 1
+        assert stream._positional_dims[0].label == "g"
+
+        # Check first few array keys
+        assert stream._indices[0].array_key == "_p0000_g0000"
+        assert stream._indices[0].dim_index == (0, 0)  # (t=0, c=0)
+        assert stream._indices[2].array_key == "_p0000_g0001"
+        assert stream._indices[6].array_key == "_p0001_g0000"
+
+        # Check image_id conversion for multi-axis
+        assert stream._indices[0].image_id == "0:0"  # p=0, g=0
+        assert stream._indices[2].image_id == "0:1"  # p=0, g=1
+        assert stream._indices[4].image_id == "0:2"  # p=0, g=2
+        assert stream._indices[6].image_id == "1:0"  # p=1, g=0
+
+        print(f"✓ Created stream with {len(stream._indices)} frames")
+        print(f"  Number of positions: {stream._num_positions}")
+        print(f"  Positional dimensions: {[d.label for d in stream._positional_dims]}")
         for i in range(min(6, len(stream._indices))):
-            key, idx = stream._indices[i]
-            print(f"  Frame {i}: key={key}, idx={idx}")
-
-        stream.flush()
+            frame_idx = stream._indices[i]
+            print(f"  Frame {i}: key={frame_idx.array_key}, idx={frame_idx.dim_index}")
 
 
-def test_position_grid_region() -> None:
-    """Test with position, grid, and custom region dimension."""
-    print("\n=== Test 3: Position (p) + Grid (g) + Region (r) ===")
+def test_position_grid_other() -> None:
+    """Test with position, grid, and custom other dimension."""
+    print("\n=== Test 3: Position (p) + Grid (g) + Other (o) ===")
 
     dimensions = [
         Dimension(label="p", size=2),  # 2 positions
         Dimension(label="g", size=2),  # 2 grid positions
-        Dimension(label="r", size=2),  # 2 regions per grid
+        Dimension(label="o", size=2),  # 2 other
         Dimension(label="t", size=1),
         Dimension(label="c", size=1),
         Dimension(label="y", size=32, chunk_size=16),
@@ -82,19 +126,48 @@ def test_position_grid_region() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         stream = omew.TifffileStream()
         stream.create(
-            str(Path(tmpdir) / "pos_grid_region.ome.tiff"),
+            str(Path(tmpdir) / "pos_grid_other.ome.tiff"),
             np.dtype("uint16"),
             dimensions,
         )
 
-        print(f"Created stream with {len(stream._indices)} frames")
-        print(f"Number of positions: {stream._num_positions}")
-        print(f"Positional dimensions: {[d.label for d in stream._positional_dims]}")
-        print("\nArray keys:")
-        for i, (key, idx) in stream._indices.items():
-            print(f"  Frame {i}: key={key}, idx={idx}")
+        # Should have 2 positions x 2 grids x 2 other x 1 timepoint = 8 frames
+        assert len(stream._indices) == 8
 
-        stream.flush()
+        # Should have 2 positions
+        assert stream._num_positions == 2
+
+        # Should have grid and other as positional dimensions
+        assert len(stream._positional_dims) == 2
+        assert stream._positional_dims[0].label == "g"
+        assert stream._positional_dims[1].label == "o"
+
+        # Check all array keys follow p_g_o pattern
+        expected_keys = [
+            "_p0000_g0000_o0000",
+            "_p0000_g0000_o0001",
+            "_p0000_g0001_o0000",
+            "_p0000_g0001_o0001",
+            "_p0001_g0000_o0000",
+            "_p0001_g0000_o0001",
+            "_p0001_g0001_o0000",
+            "_p0001_g0001_o0001",
+        ]
+        for i, expected_key in enumerate(expected_keys):
+            assert stream._indices[i].array_key == expected_key
+            assert stream._indices[i].dim_index == (0, 0)  # (t=0, c=0)
+
+        # Check image_id conversion for 3-axis
+        assert stream._indices[0].image_id == "0:0:0"  # p=0, g=0, o=0
+        assert stream._indices[1].image_id == "0:0:1"  # p=0, g=0, o=1
+        assert stream._indices[2].image_id == "0:1:0"  # p=0, g=1, o=0
+        assert stream._indices[4].image_id == "1:0:0"  # p=1, g=0, o=0
+
+        print(f"✓ Created stream with {len(stream._indices)} frames")
+        print(f"  Number of positions: {stream._num_positions}")
+        print(f"  Positional dimensions: {[d.label for d in stream._positional_dims]}")
+        for i, frame_idx in stream._indices.items():
+            print(f"  Frame {i}: key={frame_idx.array_key}, idx={frame_idx.dim_index}")
 
 
 def test_zarr_with_positional_dims() -> None:
@@ -113,23 +186,56 @@ def test_zarr_with_positional_dims() -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         stream = omew.AcquireZarrStream()
         stream.create(
-            str(Path(tmpdir) / "pos_grid.ome.zarr"), np.dtype("uint16"), dimensions
+            str(Path(tmpdir) / "pos_grid.ome.zarr"),
+            np.dtype("uint16"),
+            dimensions,
         )
 
-        print(f"Created Zarr stream with {len(stream._indices)} frames")
-        print("Array keys (unique):")
-        unique_keys = sorted({key for key, _ in stream._indices.values()})
+        # Should have 2 positions x 2 grids x 2 timepoints = 8 frames
+        assert len(stream._indices) == 8
+
+        # Should have 2 positions
+        assert stream._num_positions == 2
+
+        # Should have grid as positional dimension
+        assert len(stream._positional_dims) == 1
+        assert stream._positional_dims[0].label == "g"
+
+        # Get unique array keys
+        unique_keys = sorted(
+            {frame_idx.array_key for frame_idx in stream._indices.values()}
+        )
+
+        # Should have 4 unique arrays (2 positions x 2 grids)
+        assert len(unique_keys) == 4
+        expected_keys = ["_p0000_g0000", "_p0000_g0001", "_p0001_g0000", "_p0001_g0001"]
+        assert unique_keys == expected_keys
+
+        # Each array should have 2 frames (2 timepoints)
         for key in unique_keys:
-            # Count how many images per array
-            count = sum(1 for k, _ in stream._indices.values() if k == key)
+            count = sum(
+                1
+                for frame_idx in stream._indices.values()
+                if frame_idx.array_key == key
+            )
+            assert count == 2
+
+        # Check image_id conversion
+        frame_0 = next(
+            f for f in stream._indices.values() if f.array_key == "_p0000_g0000"
+        )
+        assert frame_0.image_id == "0:0"
+        frame_1 = next(
+            f for f in stream._indices.values() if f.array_key == "_p0001_g0001"
+        )
+        assert frame_1.image_id == "1:1"
+
+        print(f"✓ Created Zarr stream with {len(stream._indices)} frames")
+        print(f"  Unique array keys: {len(unique_keys)}")
+        for key in unique_keys:
+            count = sum(
+                1
+                for frame_idx in stream._indices.values()
+                if frame_idx.array_key == key
+            )
             print(f"  {key}: {count} frames")
-
-        stream.flush()
-
-
-if __name__ == "__main__":
-    test_grid_only()
-    test_position_and_grid()
-    test_position_grid_region()
-    test_zarr_with_positional_dims()
-    print("\n✓ All tests passed!")
