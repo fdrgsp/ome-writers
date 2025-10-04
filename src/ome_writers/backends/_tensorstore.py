@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
@@ -48,6 +48,7 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         dimensions: Sequence[Dimension],
         *,
         overwrite: bool = False,
+        **kwargs: Any,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic
         num_positions, non_position_dims = self._init_positions(dimensions)

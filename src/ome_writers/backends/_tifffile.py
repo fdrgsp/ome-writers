@@ -8,7 +8,7 @@ from contextlib import suppress
 from itertools import count
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from typing_extensions import Self
@@ -85,6 +85,7 @@ class TifffileStream(MultiPositionOMEStream):
         *,
         overwrite: bool = False,
         main_file_ome: bool = False,
+        **kwargs: Any,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic
         num_positions, tczyx_dims = self._init_positions(dimensions)
