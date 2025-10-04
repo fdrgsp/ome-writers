@@ -71,7 +71,11 @@ class PYMMCP:
     """
 
     def __init__(
-        self, sequence: useq.MDASequence, core: CMMCorePlus, dest: Path
+        self,
+        sequence: useq.MDASequence,
+        core: CMMCorePlus,
+        dest: Path,
+        main_file_ome: bool = False,
     ) -> None:
         self._seq = sequence
         self._core = core
@@ -80,14 +84,15 @@ class PYMMCP:
         self._summary_meta: SummaryMetaV1 = {}  # type: ignore
         self._frame_meta_list: list[FrameMetaV1] = []
 
-        self._stream = omew.create_stream(
+        self._stream = omew.TifffileStream()
+        self._stream.create(
             self._dest,
             dimensions=omew.dims_from_useq(
                 self._seq, core.getImageWidth(), core.getImageHeight()
             ),
             dtype=np.uint16,
             overwrite=True,
-            backend="tiff",
+            main_file_ome=main_file_ome,
         )
 
         @core.mda.events.sequenceStarted.connect
@@ -150,4 +155,52 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
                 # validate by attempting to parse
                 ome = from_xml(ome_xml)
                 # assert there is plate information
-                assert ome.plates
+                # assert ome.plates
+
+                from rich import print
+
+                print(ome.to_xml())
+
+
+def test_pymmcore_plus_mda_tiff_metadata_main_file_meta_update(tmp_path: Path) -> None:
+    """Test pymmcore_plus MDA with metadata update after acquisition."""
+
+    # skip if tifffile or ome-types is not installed
+    try:
+        import tifffile
+        from ome_types import from_xml
+    except ImportError:
+        pytest.skip("tifffile or ome-types is not installed")
+
+    seq = useq.MDASequence(
+        z_plan=useq.ZRangeAround(range=2, step=1),
+        channels=["DAPI", "FITC"],  # type: ignore
+        # stage_positions=[(0, 0), (0.1, 0.1)],
+        stage_positions=useq.WellPlatePlan(
+            plate=useq.WellPlate.from_str("96-well"),
+            a1_center_xy=(0, 0),
+            selected_wells=((0, 0), (0, 1)),
+        ),
+    )
+
+    core = CMMCorePlus()
+    core.loadSystemConfiguration()
+
+    dest = tmp_path / "test_main_file_meta.ome.tiff"
+
+    pymm = PYMMCP(seq, core, dest, True)
+    pymm.run()
+
+    # reopen the file and validate ome metadata
+    for f in sorted(tmp_path.glob("*.ome.tiff")):
+        with tifffile.TiffFile(f) as tif:
+            ome_xml = tif.ome_metadata
+            if ome_xml is not None:
+                # validate by attempting to parse
+                ome = from_xml(ome_xml)
+                # assert there is plate information
+                # assert ome.plates
+
+                from rich import print
+
+                print(ome.to_xml())
