@@ -251,9 +251,14 @@ class TifffileStream(MultiPositionOMEStream):
                 )
                 xml = binary_only_ome.to_xml()
                 ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
+            elif self._main_file_ome and position_idx == 0:
+                # For position 0 in main_file_ome mode, write the complete
+                # metadata with all positions
+                xml = metadata.to_xml()
+                ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
             else:
-                # For position 0 or when main_file_ome is False,
-                # write full metadata
+                # For standard mode (main_file_ome=False), write position-specific
+                # metadata
                 position_ome = _create_position_specific_ome(position_idx, metadata)
                 # Create ASCII version for tifffile.tiffcomment since
                 # tifffile.tiffcomment requires ASCII strings
