@@ -143,7 +143,7 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
     pymm.run()
 
     # reopen the file and validate ome metadata
-    for f in list(tmp_path.glob("*.ome.tiff")):
+    for idx, f in enumerate(sorted(tmp_path.glob("*.ome.tiff"))):
         with tifffile.TiffFile(f) as tif:
             ome_xml = tif.ome_metadata
             if ome_xml is not None:
@@ -151,3 +151,9 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
                 ome = from_xml(ome_xml)
                 # assert there is plate information
                 assert ome.plates
+
+                assert len(ome.images) == 1
+                assert (
+                    ome.images[0].name
+                    == f"test_mda_tiff_metadata_update_p{idx:03d}.ome"
+                )
