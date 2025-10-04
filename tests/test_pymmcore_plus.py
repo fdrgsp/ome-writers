@@ -80,7 +80,6 @@ class PYMMCP:
         self._seq = sequence
         self._core = core
         self._dest = dest
-        self._backend = backend.name
 
         self._summary_meta: SummaryMetaV1 = {}  # type: ignore
         self._frame_meta_list: list[FrameMetaV1] = []
@@ -92,7 +91,7 @@ class PYMMCP:
             ),
             dtype=np.uint16,
             overwrite=True,
-            backend=self._backend,
+            backend=backend.name,
         )
 
         @core.mda.events.sequenceStarted.connect
