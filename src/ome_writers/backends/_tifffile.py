@@ -196,8 +196,12 @@ class TifffileStream(MultiPositionOMEStream):
             )
             return
 
+        current_ome = self._ome.OME.from_xml(thread._ome_xml)
+
         try:
-            position_ome = _create_position_specific_ome(position_idx, metadata)
+            position_ome = _create_position_specific_ome(
+                position_idx, current_ome, metadata
+            )
             # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
             # requires ASCII strings
             ascii_xml = position_ome.to_xml().replace("µ", "&#x00B5;").encode("ascii")
@@ -282,7 +286,9 @@ thread_counter = count()
 # helpers for position-specific OME metadata updates
 
 
-def _create_position_specific_ome(position_idx: int, metadata: ome.OME) -> ome.OME:
+def _create_position_specific_ome(
+    position_idx: int, current_ome: ome.OME, metadata: ome.OME
+) -> ome.OME:
     """Create OME metadata for a specific position from complete metadata.
 
     Extracts only the Image and related metadata for the given position index.
@@ -293,6 +299,22 @@ def _create_position_specific_ome(position_idx: int, metadata: ome.OME) -> ome.O
     # Find an image by its ID in the given list of images
     # will raise StopIteration if not found (caller should catch error)
     position_image = next(img for img in metadata.images if img.id == target_image_id)
+
+    # since we are processing one position at a time, we will only have one image
+    # in current_ome.images
+    current_image = current_ome.images[0] if len(current_ome.images) > 0 else None
+
+    if current_image is not None:
+        updated_pixels = _copy_tiff_data_blocks(
+            current_image.pixels, position_image.pixels
+        )
+        position_image = position_image.model_copy(
+            update={
+                "name": current_image.name,
+                "pixels": updated_pixels,
+            }
+        )
+
     position_plates = _extract_position_plates(metadata, target_image_id)
 
     return ome.OME(
@@ -301,6 +323,23 @@ def _create_position_specific_ome(position_idx: int, metadata: ome.OME) -> ome.O
         instruments=metadata.instruments,
         plates=position_plates,
     )
+
+
+def _copy_tiff_data_blocks(
+    source_pixels: ome.Pixels | None, destination_pixels: ome.Pixels | None
+) -> ome.Pixels | None:
+    if (
+        destination_pixels is None
+        or source_pixels is None
+        or source_pixels.tiff_data_blocks is None
+    ):
+        return destination_pixels
+
+    copied_blocks = [
+        block.model_copy(deep=True) for block in source_pixels.tiff_data_blocks
+    ]
+
+    return destination_pixels.model_copy(update={"tiff_data_blocks": copied_blocks})
 
 
 def _extract_position_plates(ome: ome.OME, target_image_id: str) -> list[ome.Plate]:
