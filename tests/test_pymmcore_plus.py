@@ -76,6 +76,7 @@ class PYMMCP:
         core: CMMCorePlus,
         dest: Path,
         backend: AvailableBackend,
+        main_file_ome: bool = False,
     ) -> None:
         self._seq = sequence
         self._core = core
@@ -85,15 +86,27 @@ class PYMMCP:
         self._summary_meta: SummaryMetaV1 = {}  # type: ignore
         self._frame_meta_list: list[FrameMetaV1] = []
 
-        self._stream = omew.create_stream(
-            self._dest,
-            dimensions=omew.dims_from_useq(
-                self._seq, core.getImageWidth(), core.getImageHeight()
-            ),
-            dtype=np.uint16,
-            overwrite=True,
-            backend=self._backend,
-        )
+        if backend.file_ext.endswith("tiff") and main_file_ome:
+            self._stream = omew.TifffileStream()
+            self._stream = self._stream.create(
+                str(self._dest),
+                dtype=np.uint16,
+                dimensions=omew.dims_from_useq(
+                    self._seq, core.getImageWidth(), core.getImageHeight()
+                ),
+                overwrite=True,
+                main_file_ome=main_file_ome,
+            )
+        else:
+            self._stream = omew.create_stream(
+                self._dest,
+                dimensions=omew.dims_from_useq(
+                    self._seq, core.getImageWidth(), core.getImageHeight()
+                ),
+                dtype=np.uint16,
+                overwrite=True,
+                backend=self._backend,
+            )
 
         @core.mda.events.sequenceStarted.connect
         def _on_sequence_started(
@@ -175,3 +188,56 @@ def test_pymmcore_plus_mda_metadata_update(
         for p in range(len(seq.stage_positions)):
             assert (dest / str(p)).exists()
         assert (dest / "zarr.json").exists()
+
+
+def test_pymmcore_plus_mda_tiff_main_file_metadata_update(tmp_path: Path) -> None:
+    """Test pymmcore_plus MDA with metadata update after acquisition."""
+
+    # skip if tifffile or ome-types is not installed
+    try:
+        import tifffile
+        from ome_types import from_xml
+    except ImportError:
+        pytest.skip("tifffile or ome-types is not installed")
+
+    seq = useq.MDASequence(
+        z_plan=useq.ZRangeAround(range=2, step=1),
+        channels=["DAPI", "FITC"],  # type: ignore
+        # stage_positions=[(0, 0), (0.1, 0.1)],
+        stage_positions=useq.WellPlatePlan(
+            plate=useq.WellPlate.from_str("96-well"),
+            a1_center_xy=(0, 0),
+            selected_wells=((0, 0), (0, 1)),
+        ),
+    )
+
+    core = CMMCorePlus()
+    core.loadSystemConfiguration()
+
+    dest = tmp_path / "test_main_file_meta.ome.tiff"
+
+    # Create a simple AvailableBackend for tiff
+    from typing import NamedTuple
+
+    class TempBackend(NamedTuple):
+        name: str
+        file_ext: str
+
+    tiff_backend = TempBackend(name="tiff", file_ext=".ome.tiff")
+
+    pymm = PYMMCP(seq, core, dest, tiff_backend, main_file_ome=True)  # type: ignore
+    pymm.run()
+
+    # reopen the file and validate ome metadata
+    for f in sorted(tmp_path.glob("*.ome.tiff")):
+        with tifffile.TiffFile(f) as tif:
+            ome_xml = tif.ome_metadata
+            if ome_xml is not None:
+                # validate by attempting to parse
+                ome = from_xml(ome_xml)
+                # assert there is plate information
+                # assert ome.plates
+
+                from rich import print
+
+                print(ome.to_xml())

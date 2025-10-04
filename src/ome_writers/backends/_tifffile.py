@@ -10,6 +10,7 @@ from pathlib import Path
 from queue import Queue
 from typing import TYPE_CHECKING, NamedTuple
 
+import numpy as np
 from typing_extensions import Self
 
 from ome_writers._dimensions import dims_to_ome
@@ -18,7 +19,6 @@ from ome_writers._stream_base import MultiPositionOMEStream
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
 
-    import numpy as np
     import ome_types.model as ome
 
     from ome_writers._dimensions import Dimension
@@ -133,6 +133,9 @@ class TifffileStream(MultiPositionOMEStream):
         # Override base class type - TIFF uses FrameIndex instead of plain tuples
         self._indices: dict[int, FrameIndex] = {}  # type: ignore[assignment]
         self._is_active = False
+        self._main_file_ome = False
+        self._main_file_uuid: str | None = None
+        self._main_file_name: str | None = None
 
     # ------------------------PUBLIC METHODS------------------------ #
 
@@ -241,11 +244,13 @@ class TifffileStream(MultiPositionOMEStream):
         dimensions: Sequence[Dimension],
         *,
         overwrite: bool = False,
+        main_file_ome: bool = False,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic
         _, tczyx_dims = self._init_positions(dimensions)
         self._delete_existing = overwrite
         self._path = Path(self._normalize_path(path))
+        self._main_file_ome = main_file_ome
         shape_5d = tuple(d.size for d in tczyx_dims)
 
         # Get unique array keys and prepare files
@@ -259,20 +264,57 @@ class TifffileStream(MultiPositionOMEStream):
             frame_idx.array_key: frame_idx for frame_idx in self._indices.values()
         }
 
-        # Create a memmap for each array key
-        for array_key, fname in zip(sorted(unique_array_keys), fnames, strict=True):
-            # Get image_id from FrameIndex
-            image_id = self._array_key_to_frame_idx[array_key].image_id
-            ome = dims_to_ome(
-                tczyx_dims, dtype=dtype, tiff_file_name=fname, image_id=image_id
-            )
+        # When main_file_ome=True, create complete multi-position metadata
+        # for the first file
+        complete_ome = None
+        if main_file_ome and len(unique_array_keys) > 1:
+            complete_ome = _create_multiposition_ome(tczyx_dims, dtype, fnames)
+            # Store UUID from first image for BinaryOnly references
+            if complete_ome.images and complete_ome.images[0].pixels.tiff_data_blocks:
+                tiff_data = complete_ome.images[0].pixels.tiff_data_blocks[0]
+                if tiff_data.uuid:
+                    self._main_file_uuid = tiff_data.uuid.value
+                    self._main_file_name = Path(fnames[0]).name
+
+        # Create a thread for each array key
+        for idx, (array_key, fname) in enumerate(
+            zip(sorted(unique_array_keys), fnames, strict=True)
+        ):
+            if main_file_ome and len(unique_array_keys) > 1:
+                # For main_file_ome mode
+                if idx == 0:
+                    # First file gets complete metadata
+                    if not complete_ome:
+                        raise RuntimeError("complete_ome should be set")
+                    ome_xml = complete_ome.to_xml()
+                else:
+                    # Other files get BinaryOnly reference
+                    if not self._main_file_uuid or not self._main_file_name:
+                        msg = (
+                            "Main file UUID and name not set. "
+                            "Cannot create BinaryOnly reference."
+                        )
+                        raise ValueError(msg)
+                    binary_only_ome = _create_binary_only_ome(
+                        self._main_file_name, self._main_file_uuid
+                    )
+                    ome_xml = binary_only_ome.to_xml()
+            else:
+                # Standard mode: each file gets its own position metadata
+                # Get image_id from FrameIndex
+                image_id = self._array_key_to_frame_idx[array_key].image_id
+                ome = dims_to_ome(
+                    tczyx_dims, dtype=dtype, tiff_file_name=fname, image_id=image_id
+                )
+                ome_xml = ome.to_xml()
+
             self._queues[array_key] = q = Queue()  # type: ignore
             self._threads[array_key] = thread = WriterThread(
                 fname,
                 shape=shape_5d,
                 dtype=dtype,
                 image_queue=q,
-                ome_xml=ome.to_xml(),
+                ome_xml=ome_xml,
             )
             thread.start()
 
@@ -288,7 +330,7 @@ class TifffileStream(MultiPositionOMEStream):
         if not self.is_active():
             msg = "Stream is closed or uninitialized. Call create() first."
             raise RuntimeError(msg)
-        frame_idx = self._indices[self._append_count]  # type: ignore[assignment]
+        frame_idx = self._indices[self._append_count]
         self._write_to_backend(frame_idx.array_key, frame_idx.dim_index, frame)
         self._append_count += 1
 
@@ -379,16 +421,42 @@ class TifffileStream(MultiPositionOMEStream):
             return
 
         try:
-            # Get the FrameIndex from the mapping
-            frame_idx = self._array_key_to_frame_idx[array_key]
-            # Use the image_id property from FrameIndex
-            image_id = frame_idx.image_id
+            # Determine if this is the first file (for main_file_ome mode)
+            is_first_file = array_key == sorted(self._threads.keys())[0]
 
-            # Create position-specific OME metadata using the full image_id
-            position_ome = _create_position_specific_ome(image_id, metadata)
-            # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
-            # requires ASCII strings
-            ascii_xml = position_ome.to_xml().replace("µ", "&#x00B5;").encode("ascii")
+            # For main_file_ome mode, only first file gets full metadata
+            if self._main_file_ome and not is_first_file:
+                # Create BinaryOnly reference to the first position file
+                if not self._main_file_uuid or not self._main_file_name:
+                    msg = (
+                        "Main file UUID and name not set. "
+                        "Cannot create BinaryOnly reference."
+                    )
+                    raise ValueError(msg)
+                binary_only_ome = _create_binary_only_ome(
+                    self._main_file_name, self._main_file_uuid
+                )
+                xml = binary_only_ome.to_xml()
+                ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
+            elif self._main_file_ome and is_first_file:
+                # For first file in main_file_ome mode, write the complete
+                # metadata with all positions
+                xml = metadata.to_xml()
+                ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
+            else:
+                # For standard mode (main_file_ome=False), write position-specific
+                # metadata
+                # Get the FrameIndex from the mapping
+                frame_idx = self._array_key_to_frame_idx[array_key]
+                # Use the image_id property from FrameIndex
+                image_id = frame_idx.image_id
+
+                # Create position-specific OME metadata using the full image_id
+                position_ome = _create_position_specific_ome(image_id, metadata)
+                # Create ASCII version for tifffile.tiffcomment since
+                # tifffile.tiffcomment requires ASCII strings
+                xml = position_ome.to_xml()
+                ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to create position-specific OME metadata for array key "
@@ -469,6 +537,7 @@ thread_counter = count()
 
 # helpers for position-specific OME metadata updates
 
+
 def _create_position_specific_ome(image_id: str, metadata: ome.OME) -> ome.OME:
     """Create OME metadata for a specific position from complete metadata.
 
@@ -532,3 +601,140 @@ def _create_position_plate(
     well_dict["well_samples"] = [target_sample]
     plate_dict["wells"] = [well_dict]
     return ome.Plate.model_validate(plate_dict)
+
+
+def _create_multiposition_ome(
+    tczyx_dims: Sequence[Dimension],
+    dtype: np.dtype,
+    filenames: list[str],
+) -> ome.OME:
+    """Create OME metadata for multiple positions with their respective filenames.
+
+    This is used when main_file_ome=True to create complete metadata that
+    references all position files.
+
+    Parameters
+    ----------
+    tczyx_dims : Sequence[Dimension]
+        The dimensions for the data (t, c, z, y, x)
+    dtype : np.dtype
+        The data type of the images
+    filenames : list[str]
+        List of filenames for each position
+
+    Returns
+    -------
+    ome.OME
+        An OME object containing all images with their respective file references
+    """
+    try:
+        from ome_types import model as m
+    except ImportError as e:
+        raise ImportError(
+            "The `ome-types` package is required to use this function. "
+            "Please install it via `pip install ome-types` or use the `tiff` extra."
+        ) from e
+
+    import uuid
+
+    from ome_writers import __version__
+
+    # Get dimensions info
+    dims_sizes = {dim.label: dim.size for dim in tczyx_dims}
+
+    _dim_names = "".join(reversed(dims_sizes)).upper()
+    dim_order = next(
+        (x for x in m.Pixels_DimensionOrder if x.value.startswith(_dim_names)),
+        m.Pixels_DimensionOrder.XYCZT,
+    )
+
+    images: list[m.Image] = []
+    channels = [
+        m.Channel(
+            id=f"Channel:{i}",
+            name=f"Channel {i + 1}",
+            samples_per_pixel=1,
+        )
+        for i in range(dims_sizes.get("c", 1))
+    ]
+
+    # Create an image for each position
+    for p, filename in enumerate(filenames):
+        planes: list[m.Plane] = []
+        tiff_blocks: list[m.TiffData] = []
+        ifd = 0
+
+        # Generate a unique UUID for each position
+        uuid_ = f"urn:uuid:{uuid.uuid4()}"
+
+        # iterate over ordered cartesian product of tcz sizes
+        labels, sizes = zip(
+            *[(d.label, d.size) for d in tczyx_dims if d.label in "tcz"], strict=False
+        )
+        has_z, has_t, has_c = "z" in labels, "t" in labels, "c" in labels
+        for index in np.ndindex(*sizes):
+            plane = m.Plane(
+                the_z=index[labels.index("z")] if has_z else 0,
+                the_t=index[labels.index("t")] if has_t else 0,
+                the_c=index[labels.index("c")] if has_c else 0,
+            )
+            planes.append(plane)
+            tiff_data = m.TiffData(
+                ifd=ifd,
+                uuid=m.TiffData.UUID(value=uuid_, file_name=Path(filename).name),
+                first_c=plane.the_c,
+                first_z=plane.the_z,
+                first_t=plane.the_t,
+                plane_count=1,
+            )
+            tiff_blocks.append(tiff_data)
+            ifd += 1
+
+        pix_type = m.PixelType(np.dtype(dtype).name)
+        pixels = m.Pixels(
+            id=f"Pixels:{p}",
+            channels=channels,
+            planes=planes,
+            tiff_data_blocks=tiff_blocks,
+            dimension_order=dim_order,
+            type=pix_type,
+            size_x=dims_sizes.get("x", 1),
+            size_y=dims_sizes.get("y", 1),
+            size_z=dims_sizes.get("z", 1),
+            size_c=dims_sizes.get("c", 1),
+            size_t=dims_sizes.get("t", 1),
+        )
+
+        base_name = Path(filename).stem
+        images.append(
+            m.Image(
+                id=f"Image:{p}",
+                name=base_name,
+                pixels=pixels,
+            )
+        )
+
+    ome_obj = m.OME(images=images, creator=f"ome_writers v{__version__}")
+    return ome_obj
+
+
+def _create_binary_only_ome(metadata_file: str, uuid: str) -> ome.OME:
+    """Create an OME object with only a BinaryOnly element.
+
+    This is used when main_file_ome is True to reference the main metadata file
+    from secondary position files.
+
+    Parameters
+    ----------
+    metadata_file : str
+        The filename of the main metadata file (e.g., "file_p000.ome.tif")
+    uuid : str
+        The UUID of the main file (e.g., "urn:uuid:...")
+
+    Returns
+    -------
+    ome.OME
+        An OME object containing only a BinaryOnly element
+    """
+    binary_only = ome.OME.BinaryOnly(metadata_file=metadata_file, uuid=uuid)
+    return ome.OME(binary_only=binary_only)

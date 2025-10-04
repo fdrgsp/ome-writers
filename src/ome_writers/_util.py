@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from itertools import product
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
-from ome_writers import Dimension, DimensionLabel
+from ome_writers import Dimension
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -69,7 +69,7 @@ def fake_data_for_sizes(
             unit=DEFAULT_UNITS.get(lbl, None),
             chunk_size=_chunk_sizes.get(lbl, 1),
         )
-        for lbl in cast("list[DimensionLabel]", ordered_labels)
+        for lbl in ordered_labels
     ]
 
     shape = [d.size for d in dims]
@@ -147,7 +147,7 @@ def dims_from_useq(
             raise ValueError("seq must be a useq.MDASequence")
 
     _units: Mapping[str, UnitTuple | None] = {
-        **DEFAULT_UNITS,  # type: ignore[dict-item]
+        **DEFAULT_UNITS,
         **(units or {}),
     }
 
@@ -155,7 +155,7 @@ def dims_from_useq(
     for ax, size in seq.sizes.items():
         if size:
             # all of the useq axes are the same as the ones used here.
-            dim_label = cast("DimensionLabel", str(ax))
+            dim_label = str(ax)
             # Use default units if available, otherwise None for custom dimensions
             unit = _units.get(dim_label, None)
             dims.append(Dimension(label=dim_label, size=size, unit=unit))
