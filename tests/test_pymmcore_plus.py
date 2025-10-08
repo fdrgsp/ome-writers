@@ -76,7 +76,7 @@ class PYMMCP:
         core: CMMCorePlus,
         dest: Path,
         backend: AvailableBackend,
-        main_file_ome: bool = False,
+        ome_main_file: bool = False,
     ) -> None:
         self._seq = sequence
         self._core = core
@@ -93,7 +93,7 @@ class PYMMCP:
             dtype=np.uint16,
             overwrite=True,
             backend=backend.name,
-            main_file_ome=main_file_ome,
+            ome_main_file=ome_main_file,
         )
 
         @core.mda.events.sequenceStarted.connect
@@ -204,7 +204,7 @@ def test_pymmcore_plus_mda_tiff_metadata_main_file_meta_update(tmp_path: Path) -
 
     # Create backend for tiff
     backend = AvailableBackend("tiff", omew.TifffileStream, ".ome.tiff", lambda p: p)
-    pymm = PYMMCP(seq, core, dest, backend=backend, main_file_ome=True)
+    pymm = PYMMCP(seq, core, dest, backend=backend, ome_main_file=True)
     pymm.run()
 
     # reopen the file and validate ome metadata

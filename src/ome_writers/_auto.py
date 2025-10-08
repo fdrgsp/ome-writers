@@ -99,7 +99,7 @@ def create_stream(
         Whether to overwrite existing files or directories. Default is False.
     **backend_kwargs
         Additional backend-specific keyword arguments. For example, when using
-        the 'tiff' backend, you can pass `main_file_ome=True` to write OME
+        the 'tiff' backend, you can pass `ome_main_file=True` to write OME
         metadata in a main file instead of individual position files.
 
     Returns

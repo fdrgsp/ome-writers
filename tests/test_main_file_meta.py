@@ -25,9 +25,9 @@ def test_main_file_meta(tmp_path: Path) -> None:
 
     output_path = tmp_path / "main_file_meta.ome.tiff"
 
-    # Create and write data with main_file_ome=True
+    # Create and write data with ome_main_file=True
     stream = omew.TifffileStream()
-    stream = stream.create(str(output_path), dtype, dimensions, main_file_ome=True)
+    stream = stream.create(str(output_path), dtype, dimensions, ome_main_file=True)
     assert stream.is_active()
 
     for frame in data_gen:
@@ -70,7 +70,7 @@ def test_main_file_meta(tmp_path: Path) -> None:
 
 
 def test_main_file_meta_false(tmp_path: Path) -> None:
-    """Test that main_file_ome=False creates separate metadata for each position."""
+    """Test that ome_main_file=False creates separate metadata for each position."""
     try:
         import tifffile
         from ome_types import from_xml
@@ -84,9 +84,9 @@ def test_main_file_meta_false(tmp_path: Path) -> None:
 
     output_path = tmp_path / "main_file_meta_false.ome.tiff"
 
-    # Create and write data with main_file_ome=False (default)
+    # Create and write data with ome_main_file=False (default)
     stream = omew.TifffileStream()
-    stream = stream.create(str(output_path), dtype, dimensions, main_file_ome=False)
+    stream = stream.create(str(output_path), dtype, dimensions, ome_main_file=False)
     assert stream.is_active()
 
     for frame in data_gen:

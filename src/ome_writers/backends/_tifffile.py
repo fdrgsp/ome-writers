@@ -84,22 +84,22 @@ class TifffileStream(MultiPositionOMEStream):
         dimensions: Sequence[Dimension],
         *,
         overwrite: bool = False,
-        main_file_ome: bool = False,
+        ome_main_file: bool = False,
         **kwargs: Any,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic
         num_positions, tczyx_dims = self._init_positions(dimensions)
         self._delete_existing = overwrite
         self._path = Path(self._normalize_path(path))
-        self._main_file_ome = main_file_ome
+        self._main_file_ome = ome_main_file
         shape_5d = tuple(d.size for d in tczyx_dims)
 
         fnames = self._prepare_files(self._path, num_positions, overwrite)
 
-        # When main_file_ome=True, create complete multi-position metadata
+        # When ome_main_file=True, create complete multi-position metadata
         # for the first file
         complete_ome = None
-        if main_file_ome and num_positions > 1:
+        if ome_main_file and num_positions > 1:
             complete_ome = _create_multiposition_ome(tczyx_dims, dtype, fnames)
             # Store UUID from first image for BinaryOnly references
             if complete_ome.images and complete_ome.images[0].pixels.tiff_data_blocks:
@@ -110,8 +110,8 @@ class TifffileStream(MultiPositionOMEStream):
 
         # Create a thread for each position
         for p_idx, fname in enumerate(fnames):
-            if main_file_ome and num_positions > 1:
-                # For main_file_ome mode
+            if ome_main_file and num_positions > 1:
+                # For ome_main_file mode
                 if p_idx == 0:
                     # First file gets complete metadata
                     if not complete_ome:
@@ -238,7 +238,7 @@ class TifffileStream(MultiPositionOMEStream):
             return
 
         try:
-            # For main_file_ome mode, only first position gets full metadata
+            # For ome_main_file mode, only first position gets full metadata
             if self._main_file_ome and position_idx > 0:
                 # Create BinaryOnly reference to the first position file
                 if not self._main_file_uuid or not self._main_file_name:
@@ -253,12 +253,12 @@ class TifffileStream(MultiPositionOMEStream):
                 xml = binary_only_ome.to_xml()
                 ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
             elif self._main_file_ome and position_idx == 0:
-                # For position 0 in main_file_ome mode, write the complete
+                # For position 0 in ome_main_file mode, write the complete
                 # metadata with all positions
                 xml = metadata.to_xml()
                 ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
             else:
-                # For standard mode (main_file_ome=False), write position-specific
+                # For standard mode (ome_main_file=False), write position-specific
                 # metadata
                 position_ome = _create_position_specific_ome(position_idx, metadata)
                 # Create ASCII version for tifffile.tiffcomment since
@@ -415,7 +415,7 @@ def _create_multiposition_ome(
 ) -> ome.OME:
     """Create OME metadata for multiple positions with their respective filenames.
 
-    This is used when main_file_ome=True to create complete metadata that
+    This is used when ome_main_file=True to create complete metadata that
     references all position files.
 
     Parameters
@@ -526,7 +526,7 @@ def _create_multiposition_ome(
 def _create_binary_only_ome(metadata_file: str, uuid: str) -> ome.OME:
     """Create an OME object with only a BinaryOnly element.
 
-    This is used when main_file_ome is True to reference the main metadata file
+    This is used when ome_main_file is True to reference the main metadata file
     from secondary position files.
 
     Parameters
