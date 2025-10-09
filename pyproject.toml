@@ -60,6 +60,7 @@ dev = [
     "rich>=14.1.0",
     "ruff>=0.13.0",
     "tensorstore-stubs>=0.1.2",
+    "pre-commit>=4.1.0",
 ]
 
 [project.urls]

@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from typing_extensions import Self
 
-from ome_writers._dimensions import dims_to_ome
 from ome_writers._stream_base import MultiPositionOMEStream
 
 if TYPE_CHECKING:
@@ -95,45 +94,14 @@ class TifffileStream(MultiPositionOMEStream):
         shape_5d = tuple(d.size for d in tczyx_dims)
 
         fnames = self._prepare_files(self._path, num_positions, overwrite)
-
-        # When ome_main_file=True, create complete multi-position metadata
-        # for the first file
-        complete_ome = None
-        if ome_main_file and num_positions > 1:
-            complete_ome = _create_multiposition_ome(tczyx_dims, dtype, fnames)
-            # Store UUID from first image for BinaryOnly references
-            if complete_ome.images and complete_ome.images[0].pixels.tiff_data_blocks:
-                tiff_data = complete_ome.images[0].pixels.tiff_data_blocks[0]
-                if tiff_data.uuid:
-                    self._main_file_uuid = tiff_data.uuid.value
-                    self._main_file_name = Path(fnames[0]).name
+        ome_xml_list = self._prepare_metadata_for_positions(
+            tczyx_dims, dtype, fnames, num_positions, ome_main_file
+        )
 
         # Create a thread for each position
-        for p_idx, fname in enumerate(fnames):
-            if ome_main_file and num_positions > 1:
-                # For ome_main_file mode
-                if p_idx == 0:
-                    # First file gets complete metadata
-                    if not complete_ome:
-                        raise RuntimeError("complete_ome should be set")
-                    ome_xml = complete_ome.to_xml()
-                else:
-                    # Other files get BinaryOnly reference
-                    if not self._main_file_uuid or not self._main_file_name:
-                        msg = (
-                            "Main file UUID and name not set. "
-                            "Cannot create BinaryOnly reference."
-                        )
-                        raise ValueError(msg)
-                    binary_only_ome = _create_binary_only_ome(
-                        self._main_file_name, self._main_file_uuid
-                    )
-                    ome_xml = binary_only_ome.to_xml()
-            else:
-                # Standard mode: each file gets its own position metadata
-                ome = dims_to_ome(tczyx_dims, dtype=dtype, tiff_file_name=fname)
-                ome_xml = ome.to_xml()
-
+        for p_idx, (fname, ome_xml) in enumerate(
+            zip(fnames, ome_xml_list, strict=True)
+        ):
             self._queues[p_idx] = q = Queue()  # type: ignore
             self._threads[p_idx] = thread = WriterThread(
                 fname,
@@ -219,6 +187,53 @@ class TifffileStream(MultiPositionOMEStream):
             fnames.append(str(p_path))
 
         return fnames
+
+    def _prepare_metadata_for_positions(
+        self,
+        tczyx_dims: Sequence[Dimension],
+        dtype: np.dtype,
+        fnames: list[str],
+        num_positions: int,
+        ome_main_file: bool,
+    ) -> list[str]:
+        """Prepare OME-XML metadata for all positions.
+
+        Returns a list of OME-XML strings, one for each position.
+        """
+        # Standard mode: each file gets its own metadata
+        if not ome_main_file or num_positions == 1:
+            from ome_writers._dimensions import dims_to_ome
+
+            return [
+                dims_to_ome(tczyx_dims, dtype=dtype, tiff_file_name=fname).to_xml()
+                for fname in fnames
+            ]
+
+        # ome_main_file mode with multiple positions
+        complete_ome = _create_multiposition_ome(tczyx_dims, dtype, fnames)
+
+        # Store UUID from first image for BinaryOnly references
+        if complete_ome.images and complete_ome.images[0].pixels.tiff_data_blocks:
+            tiff_data = complete_ome.images[0].pixels.tiff_data_blocks[0]
+            if tiff_data.uuid:
+                self._main_file_uuid = tiff_data.uuid.value
+                self._main_file_name = Path(fnames[0]).name
+
+        # First position gets complete metadata, others get BinaryOnly references
+        ome_xml_list = [complete_ome.to_xml()]
+
+        for _ in range(1, num_positions):
+            if not self._main_file_uuid or not self._main_file_name:
+                raise ValueError(
+                    "Main file UUID and Name not set, "
+                    "cannot create BinaryOnly reference."
+                )
+            binary_only_ome = _create_binary_only_ome(
+                self._main_file_name, self._main_file_uuid
+            )
+            ome_xml_list.append(binary_only_ome.to_xml())
+
+        return ome_xml_list
 
     def _write_to_backend(
         self, array_key: str, index: tuple[int, ...], frame: np.ndarray
