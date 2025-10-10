@@ -227,3 +227,35 @@ def test_multiposition_acquisition(backend: AvailableBackend, tmp_path: Path) ->
             # Shape should be (t, z, c, y, x) = (3, 2, 2, 32, 32)
             expected_shape = (3, 2, 2, 32, 32)
             assert data.shape == expected_shape
+
+
+def test_tensorstore_memory_storage() -> None:
+    """Test TensorStoreZarrStream with in-memory storage."""
+    if not omew.TensorStoreZarrStream.is_available():
+        pytest.skip("TensorStore not available")
+
+    # Create fake data
+    data_gen, dimensions, dtype = omew.fake_data_for_sizes(
+        sizes={"t": 3, "c": 2, "y": 32, "x": 32},
+        chunk_sizes={"y": 16, "x": 16},
+        dtype=np.uint16,
+    )
+
+    # Create stream with memory storage
+    stream = omew.TensorStoreZarrStream()
+    stream = stream.create("memory", dtype, dimensions, overwrite=True)
+
+    assert stream.is_active()
+    assert stream._in_memory  # type: ignore[attr-defined]
+    assert stream._group_path == "memory://"  # type: ignore[attr-defined]
+
+    # Write all data
+    for data in data_gen:
+        stream.append(data)
+
+    # Verify stream is still active before flush
+    assert stream.is_active()
+
+    # Flush and verify stream is closed
+    stream.flush()
+    assert not stream.is_active()

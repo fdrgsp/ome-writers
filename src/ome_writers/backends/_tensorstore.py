@@ -35,11 +35,13 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
 
         self._ts = tensorstore
         super().__init__()
-        self._group_path: Path | None = None
-        self._array_paths: dict[str, Path] = {}  # array_key -> path mapping
+        self._group_path: Path | str | None = None
+        self._array_paths: dict[str, Path | str] = {}  # array_key -> path mapping
         self._futures: list = []
         self._stores: dict[str, tensorstore.TensorStore] = {}  # array_key -> store
         self._delete_existing = True
+        # to track if we are using in-memory storage
+        self._in_memory = False
 
     def create(
         self,
@@ -53,7 +55,15 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         num_positions, non_position_dims = self._init_positions(dimensions)
         self._delete_existing = overwrite
 
-        self._create_group(self._normalize_path(path), dimensions)
+        # if a memory path is requested, use the tensorstore memory driver
+        if str(path).rstrip("/").rstrip(":").lower() == "memory":
+            self._in_memory = True
+            path = "memory://"
+        else:
+            self._in_memory = False
+            path = self._normalize_path(path)
+
+        self._create_group(path, dimensions)
 
         # Create stores for each array
         for pos_idx in range(num_positions):
@@ -78,9 +88,16 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
     ) -> dict:
         labels, shape, units, chunk_shape = zip(*dimensions, strict=False)
         labels = tuple(str(x) for x in labels)
+
+        # Use memory driver for in-memory storage, file driver otherwise
+        if self._in_memory:
+            kvstore = {"driver": "memory", "path": str(self._array_paths[array_key])}
+        else:
+            kvstore = {"driver": "file", "path": str(self._array_paths[array_key])}
+
         return {
             "driver": "zarr3",
-            "kvstore": {"driver": "file", "path": str(self._array_paths[array_key])},
+            "kvstore": kvstore,
             "schema": {
                 "domain": {"shape": shape, "labels": labels},
                 "dtype": dtype.name,
@@ -109,9 +126,14 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
     def is_active(self) -> bool:
         return bool(self._stores)
 
-    def _create_group(self, path: str, dims: Sequence[Dimension]) -> Path:
-        self._group_path = Path(path)
-        self._group_path.mkdir(parents=True, exist_ok=True)
+    def _create_group(self, path: str, dims: Sequence[Dimension]) -> Path | str:
+        if self._in_memory:
+            # For memory storage, just use the path string directly
+            self._group_path = path
+        else:
+            # For file storage, create directories
+            self._group_path = Path(path)
+            self._group_path.mkdir(parents=True, exist_ok=True)
 
         # Determine array keys and dimensions based on position dimension
         position_dims = [d for d in dims if d.label == "p"]
@@ -123,15 +145,25 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         array_dims: dict[str, Sequence[Dimension]] = {}
         for pos_idx in range(num_positions):
             array_key = str(pos_idx)
-            self._array_paths[array_key] = self._group_path / array_key
+            if self._in_memory:
+                # For memory, use a virtual path
+                self._array_paths[array_key] = f"{path}{array_key}"
+            else:
+                # For file, use actual filesystem path
+                assert isinstance(self._group_path, Path)
+                self._array_paths[array_key] = self._group_path / array_key
             # Use non_position_dims for multi-pos, full dims for single pos
             array_dims[array_key] = non_position_dims if self._position_dim else dims
 
-        group_zarr = self._group_path / "zarr.json"
-        group_meta = {
-            "zarr_format": 3,
-            "node_type": "group",
-            "attributes": ome_meta_v5(array_dims=array_dims),
-        }
-        group_zarr.write_text(json.dumps(group_meta, indent=2))
+        # Only write zarr.json for file-based storage
+        if not self._in_memory:
+            assert isinstance(self._group_path, Path)
+            group_zarr = self._group_path / "zarr.json"
+            group_meta = {
+                "zarr_format": 3,
+                "node_type": "group",
+                "attributes": ome_meta_v5(array_dims=array_dims),
+            }
+            group_zarr.write_text(json.dumps(group_meta, indent=2))
+
         return self._group_path
