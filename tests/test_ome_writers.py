@@ -246,8 +246,8 @@ def test_tensorstore_memory_storage() -> None:
     stream = stream.create("memory", dtype, dimensions, overwrite=True)
 
     assert stream.is_active()
-    assert stream._in_memory  # type: ignore[attr-defined]
-    assert stream._group_path == "memory://"  # type: ignore[attr-defined]
+    assert stream._in_memory
+    assert stream._group_path == "memory://"
 
     # Write all data
     for data in data_gen:
