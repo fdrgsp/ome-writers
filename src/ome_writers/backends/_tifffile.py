@@ -38,6 +38,11 @@ class TifffileStream(MultiPositionOMEStream):
     If a 'p' (position) dimension is included in the dimensions, a separate
     OME-TIFF file will be created for each position.
 
+    In the create() method, the OME-XML metadata is generated and written to each
+    position TIFF file. If `ome_main_file=True` is specified, the first position
+    file will contain the complete OME metadata for all positions, while
+    subsequent position files will contain a BinaryOnly reference to the main file.
+
     Attributes
     ----------
     _writers : Dict[int, np.memmap]
@@ -70,6 +75,8 @@ class TifffileStream(MultiPositionOMEStream):
         self._threads: dict[int, WriterThread] = {}
         self._queues: dict[int, Queue[np.ndarray | None]] = {}
         self._is_active = False
+
+        # to handle ome_main_file mode
         self._main_file_ome = False
         self._main_file_uuid: str | None = None
         self._main_file_name: str | None = None
