@@ -274,6 +274,9 @@ class MultiPositionOMEStream(OMEStream):
     ) -> str:
         """Create an array key from positional values.
 
+        Uses simple numeric keys ("0", "1", "2") when only position dimension exists.
+        Uses descriptive keys ("p0000_g0001") when multiple positional axes are present.
+
         Parameters
         ----------
         positional_values : tuple[int, ...]
@@ -291,6 +294,17 @@ class MultiPositionOMEStream(OMEStream):
         if not positional_values:
             return "0"
 
+        # If we only have position dimension (no other positional axes),
+        # use simple numeric format: "0", "1", "2", etc.
+        if position_dims and not positional_dims:
+            return str(positional_values[0])
+
+        # If we have no position dimension but have other positional dims,
+        # use simple numeric format if only one positional dim
+        if not position_dims and len(positional_dims) == 1:
+            return str(positional_values[0])
+
+        # Multiple positional axes: use descriptive format
         array_key_parts = []
 
         if position_dims:

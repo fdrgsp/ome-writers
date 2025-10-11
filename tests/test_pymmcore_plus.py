@@ -175,24 +175,39 @@ def test_pymmcore_plus_mda_metadata_update(
 
     elif backend.file_ext.endswith("zarr"):
         assert dest.exists()
-        # With the new descriptive naming, folders are named like "p0000_g0000"
+
         # Calculate expected arrays: num_positions * grid_positions
         num_positions = len(seq.stage_positions)
         g = seq.grid_plan.num_positions() if seq.grid_plan else 1
 
         # Generate expected folder names
         expected_folders = []
-        for p in range(num_positions):
-            for grid in range(g):
-                if g > 1:
-                    # Multiple grid positions: use "p{:04d}_g{:04d}" format
+        if g > 1:
+            # Multiple grid positions: use descriptive format "p{:04d}_g{:04d}"
+            for p in range(num_positions):
+                for grid in range(g):
                     expected_folders.append(f"p{p:04d}_g{grid:04d}")
-                else:
-                    # Single grid position: use "p{:04d}" format
-                    expected_folders.append(f"p{p:04d}")
+        else:
+            # Single grid position: use simple numeric format "0", "1", "2"
+            for p in range(num_positions):
+                expected_folders.append(str(p))
 
         # Verify all expected folders exist
         for folder_name in expected_folders:
             assert (dest / folder_name).exists(), f"Missing folder: {folder_name}"
 
         assert (dest / "zarr.json").exists()
+
+        import json
+
+        with open(dest / "zarr.json") as f:
+            group_meta = json.load(f)
+            assert "attributes" in group_meta
+            assert "ome" in group_meta["attributes"]
+            ome_attrs = group_meta["attributes"]["ome"]
+            assert "multiscales" in ome_attrs
+            multiscale = ome_attrs["multiscales"][0]
+            assert "datasets" in multiscale
+            for ds in multiscale["datasets"]:
+                assert "path" in ds
+                assert ds["path"] in expected_folders

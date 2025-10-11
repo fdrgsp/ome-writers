@@ -89,19 +89,36 @@ class TifffileStream(MultiPositionOMEStream):
     ) -> str:
         """Create descriptive array keys for TIFF files with leading underscore.
 
-        Override base implementation to add leading underscore for TIFF filenames.
+        TIFF always uses descriptive format (e.g., "_p0000") since files are in a
+        flat directory structure, unlike Zarr which uses folders.
 
         Returns
         -------
         str
             Descriptive array key (e.g., "_p0000_g0001_r0002")
         """
-        # Get the base key from parent class
-        base_key = super()._create_array_key(
-            positional_values, positional_dims, position_dims
-        )
-        # Add leading underscore for TIFF files (unless it's just "0")
-        return base_key if base_key == "0" else f"_{base_key}"
+        if not positional_values:
+            return "_0"
+
+        # Always use descriptive format for TIFF files
+        array_key_parts = []
+
+        if position_dims:
+            pos = positional_values[0]
+            array_key_parts.append(f"p{pos:04d}")
+            remaining_values = positional_values[1:]
+        else:
+            remaining_values = positional_values
+
+        # Add positional dimension parts
+        for j, dim in enumerate(positional_dims):
+            if j < len(remaining_values):
+                val = remaining_values[j]
+                array_key_parts.append(f"{dim.label}{val:04d}")
+
+        # Create the final array key with leading underscore
+        base_key = "_".join(array_key_parts) if array_key_parts else "0"
+        return f"_{base_key}"
 
     def create(
         self,
