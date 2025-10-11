@@ -50,7 +50,7 @@ class AcquireZarrStream(MultiPositionOMEStream):
         *,
         overwrite: bool = False,
     ) -> Self:
-        # Use MultiPositionOMEStream to handle position logic
+        # Use MultiPositionOMEStream to handle position logic with extra axes
         _, non_position_dims = self._init_positions(dimensions)
         self._group_path = Path(self._normalize_path(path))
 
@@ -69,9 +69,7 @@ class AcquireZarrStream(MultiPositionOMEStream):
         self._az_dims_keepalive = az_dims
 
         # Create AcquireZarr array settings for each unique array key
-        unique_array_keys = {
-            array_key for array_key, _ in self._indices.values()
-        }
+        unique_array_keys = {array_key for array_key, _ in self._indices.values()}
         az_array_settings = [
             self._aqz_pos_array(array_key, az_dims, dtype)
             for array_key in sorted(unique_array_keys)
@@ -105,7 +103,10 @@ class AcquireZarrStream(MultiPositionOMEStream):
         manually constructed metadata.
         """
         dims = self._non_position_dims
-        attrs = ome_meta_v5({str(i): dims for i in range(self._num_positions)})
+        # Get all unique array keys
+        unique_array_keys = {array_key for array_key, _ in self._indices.values()}
+        # Create a mapping from array_key to dimensions
+        attrs = ome_meta_v5(dict.fromkeys(unique_array_keys, dims))
         zarr_json = Path(self._group_path) / "zarr.json"
         current_meta: dict = {
             "consolidated_metadata": None,

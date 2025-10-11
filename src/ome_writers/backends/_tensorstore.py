@@ -49,16 +49,14 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         *,
         overwrite: bool = False,
     ) -> Self:
-        # Use MultiPositionOMEStream to handle position logic
+        # Use MultiPositionOMEStream to handle position logic with extra axes
         _, non_position_dims = self._init_positions(dimensions)
         self._delete_existing = overwrite
 
         self._create_group(self._normalize_path(path), non_position_dims)
 
         # Create stores for each unique array key
-        unique_array_keys = {
-            array_key for array_key, _ in self._indices.values()
-        }
+        unique_array_keys = {array_key for array_key, _ in self._indices.values()}
         for array_key in sorted(unique_array_keys):
             spec = self._create_spec(dtype, non_position_dims, array_key)
             try:
@@ -118,9 +116,7 @@ class TensorStoreZarrStream(MultiPositionOMEStream):
         array_dims: dict[str, Sequence[Dimension]] = {}
 
         # Get all unique array keys from the indices mapping
-        unique_array_keys = {
-            array_key for array_key, _ in self._indices.values()
-        }
+        unique_array_keys = {array_key for array_key, _ in self._indices.values()}
         for array_key in sorted(unique_array_keys):
             self._array_paths[array_key] = self._group_path / array_key
             # Use non_position_dims for multi-pos acquisitions

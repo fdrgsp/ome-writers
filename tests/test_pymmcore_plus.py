@@ -144,15 +144,19 @@ def test_pymmcore_plus_mda_metadata_update(
     tmp_path: Path, backend: AvailableBackend, seq: useq.MDASequence
 ) -> None:
     """Test pymmcore_plus MDA with metadata update after acquisition."""
+
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
-    dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
+    dest = tmp_path / f"test_mda_tiff_metadata_update.{backend.file_ext}"
 
     pymm = PYMMCP(seq, core, dest, backend=backend)
     pymm.run()
 
     if backend.file_ext.endswith("tiff"):
+        # TO pass requires:
+        # https://github.com/pymmcore-plus/pymmcore-plus/pull/505
+        # https://github.com/pymmcore-plus/pymmcore-plus/pull/510
         try:
             import tifffile
             from ome_types import from_xml
@@ -171,6 +175,24 @@ def test_pymmcore_plus_mda_metadata_update(
 
     elif backend.file_ext.endswith("zarr"):
         assert dest.exists()
-        for p in range(len(seq.stage_positions)):
-            assert (dest / str(p)).exists()
+        # With the new descriptive naming, folders are named like "p0000_g0000"
+        # Calculate expected arrays: num_positions * grid_positions
+        num_positions = len(seq.stage_positions)
+        g = seq.grid_plan.num_positions() if seq.grid_plan else 1
+
+        # Generate expected folder names
+        expected_folders = []
+        for p in range(num_positions):
+            for grid in range(g):
+                if g > 1:
+                    # Multiple grid positions: use "p{:04d}_g{:04d}" format
+                    expected_folders.append(f"p{p:04d}_g{grid:04d}")
+                else:
+                    # Single grid position: use "p{:04d}" format
+                    expected_folders.append(f"p{p:04d}")
+
+        # Verify all expected folders exist
+        for folder_name in expected_folders:
+            assert (dest / folder_name).exists(), f"Missing folder: {folder_name}"
+
         assert (dest / "zarr.json").exists()

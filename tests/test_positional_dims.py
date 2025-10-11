@@ -166,7 +166,11 @@ def test_tiff_position_grid_other(backend: AvailableBackend, tmp_path: Path) -> 
 
 
 def test_zarr_with_positional_dims(backend: AvailableBackend, tmp_path: Path) -> None:
-    """Test Zarr backend with positional dimensions."""
+    """Test Zarr backends with positional dimensions (p and g).
+
+    Zarr backends now treat non-standard dimensions (like 'g') as positional,
+    creating separate arrays for each combination of positional dimensions.
+    """
     # This test is for Zarr backends (acquire-zarr and tensorstore)
     if backend.name == "tiff":
         pytest.skip("This test is for Zarr backends only")
@@ -194,20 +198,24 @@ def test_zarr_with_positional_dims(backend: AvailableBackend, tmp_path: Path) ->
     # Should have 2 positions
     assert stream._num_positions == 2
 
-    # Grid dimension is now in non_position_dims (not special for Zarr)
+    # Grid dimension is now treated as positional (like TIFF backend)
+    assert len(stream._positional_dims) == 1
+    assert stream._positional_dims[0].label == "g"
+
+    # Non-position dims should only contain standard dimensions (t, c, y, x)
     non_pos_labels = [d.label for d in stream._non_position_dims]
-    assert "g" in non_pos_labels
+    assert "g" not in non_pos_labels
     assert "t" in non_pos_labels
 
     # Get unique array keys
     unique_keys = sorted({array_key for array_key, _ in stream._indices.values()})
 
-    # Should have 2 unique arrays (only 2 positions, g is a regular dimension)
-    assert len(unique_keys) == 2
-    expected_keys = ["0", "1"]  # Simple position indices for Zarr
+    # Should have 4 unique arrays (2 positions x 2 grids)
+    assert len(unique_keys) == 4
+    expected_keys = ["p0000_g0000", "p0000_g0001", "p0001_g0000", "p0001_g0001"]
     assert unique_keys == expected_keys
 
-    # Each array should have 4 frames (2 grids x 2 timepoints)
+    # Each array should have 2 frames (2 timepoints)
     for key in unique_keys:
         count = sum(1 for array_key, _ in stream._indices.values() if array_key == key)
-        assert count == 4
+        assert count == 2

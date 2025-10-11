@@ -8,12 +8,12 @@ from contextlib import suppress
 from itertools import count
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
 from ome_writers._dimensions import dims_to_ome
-from ome_writers._stream_base import MultiPositionOMEStream
+from ome_writers._stream_base import FrameIndex, MultiPositionOMEStream
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -26,61 +26,6 @@ if TYPE_CHECKING:
 else:
     with suppress(ImportError):
         import ome_types.model as ome
-
-
-STANDARD_DIMS = {"x", "y", "t", "c", "z"}
-
-
-class FrameIndex(NamedTuple):
-    """Index information for a frame in a multi-dimensional acquisition.
-
-    This is used specifically by the TIFF backend to support multi-axis
-    positional dimensions (p, g, r, etc.) with hierarchical Image IDs.
-
-    Attributes
-    ----------
-    array_key : str
-        The key identifying which array/file this frame belongs to.
-        e.g, "_p0000" for position 0
-        e.g, "_p0000_g0001" for position 0, grid 1
-        e.g. "_p0000_g0001_r0002" for position 0, grid 1, region 2
-    dim_index : tuple[int, ...]
-        The index tuple for non-positional dimensions (t, c, z).
-    """
-
-    array_key: str
-    dim_index: tuple[int, ...]
-
-    @property
-    def image_id(self) -> str:
-        """Convert array_key to image_id format for OME metadata.
-
-        Examples
-        --------
-        - "_p0000_g0001" -> "0:1"
-        - "_p0001" -> "1"
-        - "0" -> "0"
-        """
-        # Extract position indices from array_key like "_p0000_g0001_r0002"
-        parts = [p for p in self.array_key.split("_") if p]
-
-        if len(parts) == 1:
-            if (name := parts[0]).isdigit():
-                return name
-            else:
-                # keep only numeric characters
-                name = "".join(c for c in name if c.isdigit())
-                return str(int(name))
-
-        indices = []
-        for part in parts:
-            if part and len(part) > 1:
-                try:
-                    indices.append(str(int(part[1:])))
-                except ValueError:
-                    continue
-
-        return ":".join(indices) if indices else "0"
 
 
 class TifffileStream(MultiPositionOMEStream):
@@ -131,108 +76,32 @@ class TifffileStream(MultiPositionOMEStream):
         # Additional positional dimensions (g, r, etc.) for multi-axis support
         self._positional_dims: list[Dimension] = []
         # Override base class type - TIFF uses FrameIndex instead of plain tuples
-        self._indices: dict[int, FrameIndex] = {}  # type: ignore[assignment]
+        # self._indices: dict[int, FrameIndex] = {}  # type: ignore[assignment]
         self._is_active = False
 
     # ------------------------PUBLIC METHODS------------------------ #
 
-    def _init_positions(
-        self, dimensions: Sequence[Dimension]
-    ) -> tuple[int, Sequence[Dimension]]:
-        """Initialize position tracking with multi-axis support for TIFF backend.
+    def _create_array_key(
+        self,
+        positional_values: tuple[int, ...],
+        positional_dims: list[Dimension],
+        position_dims: list[Dimension],
+    ) -> str:
+        """Create descriptive array keys for TIFF files with leading underscore.
 
-        This override extends the base implementation to support additional
-        positional dimensions (g, r, etc.) beyond the standard 'p' dimension.
-        These positional dimensions are used to create hierarchical Image IDs
-        in OME metadata (e.g., "Image:0:1" for position 0, grid 1).
-
-        This method separates dimensions into three categories:
-        1. Standard dimensions (x, y, t, c, z) - used for array indexing
-        2. Position dimension (p) - primary positional dimension
-        3. Positional dimensions (g, r, etc.) - additional positional organization
-
-        Positional dimensions (p, g, r, etc.) are used to create separate arrays
-        with keys like "_p0000_g0001_r0002", while standard dimensions are used
-        for indexing within each array.
+        Override base implementation to add leading underscore for TIFF filenames.
 
         Returns
         -------
-        tuple[int, Sequence[Dimension]]
-            The number of positions and the non-position dimensions.
+        str
+            Descriptive array key (e.g., "_p0000_g0001_r0002")
         """
-        from itertools import product
-
-        # Separate position dimension from other dimensions
-        position_dims = [d for d in dimensions if d.label == "p"]
-        # Find non-standard dimensions (excluding position) for positional organization
-        positional_dims = [
-            d for d in dimensions if d.label not in STANDARD_DIMS and d.label != "p"
-        ]
-        # Standard processing dimensions (t, c, z - excluding spatial x, y)
-        non_position_dims = [
-            d for d in dimensions if d.label in STANDARD_DIMS and d.label != "p"
-        ]
-
-        # Create ranges for non-spatial standard dimensions (for indexing)
-        non_p_ranges = [range(d.size) for d in non_position_dims if d.label not in "yx"]
-
-        # get number of positions (first dimension if multiple position_dims or 1)
-        num_positions = position_dims[0].size if position_dims else 1
-
-        # Create ranges for all positional dimensions in consistent order
-        positional_ranges = [range(d.size) for d in positional_dims]
-
-        # Create the cartesian product for all combinations
-        # Order: position (if exists), then positional dims, then processing dims
-        if position_dims:
-            range_iter = enumerate(
-                product(range(num_positions), *positional_ranges, *non_p_ranges)
-            )
-        else:
-            range_iter = enumerate(product(*positional_ranges, *non_p_ranges))
-
-        self._position_dim = position_dims[0] if position_dims else None
-        self._positional_dims = positional_dims
-
-        # Create array keys with format "_p0000_g0000_r0000" etc.
-        self._indices = {}
-        for i, values in range_iter:
-            array_key_parts = []
-
-            if position_dims:
-                pos = values[0]
-                array_key_parts.append(f"_p{pos:04d}")
-                remaining_values = values[1:]
-            else:
-                pos = 0  # Default to position 0 for non-multi-position
-                remaining_values = values
-
-            # Add positional dimension parts
-            for j, dim in enumerate(positional_dims):
-                if j < len(remaining_values):
-                    val = remaining_values[j]
-                    array_key_parts.append(f"_{dim.label}{val:04d}")
-
-            # Calculate the index for non-positional dimensions
-            positional_count = len(positional_dims)
-            if position_dims:
-                positional_count += 1
-            idx = remaining_values[len(positional_dims) :] if remaining_values else []
-
-            # Create the final array key
-            if array_key_parts:
-                array_key = "".join(array_key_parts)
-            else:
-                # No positional dims at all (single acquisition)
-                array_key = "0"
-
-            self._indices[i] = FrameIndex(array_key, tuple(idx))
-
-        self._append_count = 0
-        self._num_positions = num_positions
-        self._non_position_dims = non_position_dims
-
-        return num_positions, non_position_dims
+        # Get the base key from parent class
+        base_key = super()._create_array_key(
+            positional_values, positional_dims, position_dims
+        )
+        # Add leading underscore for TIFF files (unless it's just "0")
+        return base_key if base_key == "0" else f"_{base_key}"
 
     def create(
         self,
@@ -288,7 +157,7 @@ class TifffileStream(MultiPositionOMEStream):
         if not self.is_active():
             msg = "Stream is closed or uninitialized. Call create() first."
             raise RuntimeError(msg)
-        frame_idx = self._indices[self._append_count]  # type: ignore[assignment]
+        frame_idx = self._indices[self._append_count]
         self._write_to_backend(frame_idx.array_key, frame_idx.dim_index, frame)
         self._append_count += 1
 
@@ -468,6 +337,7 @@ thread_counter = count()
 # ------------------------
 
 # helpers for position-specific OME metadata updates
+
 
 def _create_position_specific_ome(image_id: str, metadata: ome.OME) -> ome.OME:
     """Create OME metadata for a specific position from complete metadata.
