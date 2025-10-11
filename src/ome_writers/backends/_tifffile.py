@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import threading
 import warnings
+from collections.abc import Iterator
 from contextlib import suppress
 from itertools import count
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import TYPE_CHECKING
 from typing_extensions import Self
 
 from ome_writers._dimensions import dims_to_ome
-from ome_writers._stream_base import FrameIndex, MultiPositionOMEStream
+from ome_writers._stream_base import MultiPositionOMEStream
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -71,54 +72,11 @@ class TifffileStream(MultiPositionOMEStream):
         # and other positional acquisitions
         self._threads: dict[str, WriterThread] = {}
         self._queues: dict[str, Queue[np.ndarray | None]] = {}
-        # Mapping from array_key to FrameIndex for metadata operations
-        self._array_key_to_frame_idx: dict[str, FrameIndex] = {}
         # Additional positional dimensions (g, r, etc.) for multi-axis support
         self._positional_dims: list[Dimension] = []
-        # Override base class type - TIFF uses FrameIndex instead of plain tuples
-        # self._indices: dict[int, FrameIndex] = {}  # type: ignore[assignment]
         self._is_active = False
 
     # ------------------------PUBLIC METHODS------------------------ #
-
-    def _create_array_key(
-        self,
-        positional_values: tuple[int, ...],
-        positional_dims: list[Dimension],
-        position_dims: list[Dimension],
-    ) -> str:
-        """Create descriptive array keys for TIFF files with leading underscore.
-
-        TIFF always uses descriptive format (e.g., "_p0000") since files are in a
-        flat directory structure, unlike Zarr which uses folders.
-
-        Returns
-        -------
-        str
-            Descriptive array key (e.g., "_p0000_g0001_r0002")
-        """
-        if not positional_values:
-            return "_0"
-
-        # Always use descriptive format for TIFF files
-        array_key_parts = []
-
-        if position_dims:
-            pos = positional_values[0]
-            array_key_parts.append(f"p{pos:04d}")
-            remaining_values = positional_values[1:]
-        else:
-            remaining_values = positional_values
-
-        # Add positional dimension parts
-        for j, dim in enumerate(positional_dims):
-            if j < len(remaining_values):
-                val = remaining_values[j]
-                array_key_parts.append(f"{dim.label}{val:04d}")
-
-        # Create the final array key with leading underscore
-        base_key = "_".join(array_key_parts) if array_key_parts else "0"
-        return f"_{base_key}"
 
     def create(
         self,
@@ -134,21 +92,14 @@ class TifffileStream(MultiPositionOMEStream):
         self._path = Path(self._normalize_path(path))
         shape_5d = tuple(d.size for d in tczyx_dims)
 
-        # Get unique array keys and prepare files
-        unique_array_keys = {
-            frame_idx.array_key for frame_idx in self._indices.values()
-        }
+        # Get unique array keys from tuples
+        unique_array_keys = {array_key for array_key, _ in self._indices.values()}
         fnames = self._prepare_files(self._path, sorted(unique_array_keys), overwrite)
-
-        # Create a mapping from array_key to FrameIndex for metadata operations
-        self._array_key_to_frame_idx = {
-            frame_idx.array_key: frame_idx for frame_idx in self._indices.values()
-        }
 
         # Create a memmap for each array key
         for array_key, fname in zip(sorted(unique_array_keys), fnames, strict=True):
-            # Get image_id from FrameIndex
-            image_id = self._array_key_to_frame_idx[array_key].image_id
+            # Convert array_key to image_id for metadata
+            image_id = self._array_key_to_image_id(array_key)
             ome = dims_to_ome(
                 tczyx_dims, dtype=dtype, tiff_file_name=fname, image_id=image_id
             )
@@ -174,8 +125,8 @@ class TifffileStream(MultiPositionOMEStream):
         if not self.is_active():
             msg = "Stream is closed or uninitialized. Call create() first."
             raise RuntimeError(msg)
-        frame_idx = self._indices[self._append_count]
-        self._write_to_backend(frame_idx.array_key, frame_idx.dim_index, frame)
+        array_key, dim_index = self._indices[self._append_count]
+        self._write_to_backend(array_key, dim_index, frame)
         self._append_count += 1
 
     def flush(self) -> None:
@@ -247,6 +198,89 @@ class TifffileStream(MultiPositionOMEStream):
 
         return fnames
 
+    def _create_array_key(
+        self,
+        positional_values: tuple[int, ...],
+        positional_dims: list[Dimension],
+        position_dims: list[Dimension],
+    ) -> str:
+        """Create descriptive array keys for TIFF files with leading underscore.
+
+        TIFF always uses descriptive format (e.g., "_p0000") since files are in a
+        flat directory structure, unlike Zarr which uses folders.
+
+        Parameters
+        ----------
+        linear_index : int
+            The linear index from enumerate (not used for TIFF)
+        positional_values : tuple[int, ...]
+            The values for all positional dimensions (p, g, r, etc.)
+        positional_dims : list[Dimension]
+            The positional dimensions (g, r, etc., excluding 'p')
+        position_dims : list[Dimension]
+            The position dimension ('p') if present
+
+        Returns
+        -------
+        str
+            Descriptive array key (e.g., "_p0000_g0001_r0002")
+        """
+        if not positional_values:
+            return "_0"
+
+        # Always use descriptive format for TIFF files
+        array_key_parts = []
+
+        if position_dims:
+            pos = positional_values[0]
+            array_key_parts.append(f"p{pos:04d}")
+            remaining_values = positional_values[1:]
+        else:
+            remaining_values = positional_values
+
+        # Add positional dimension parts
+        for j, dim in enumerate(positional_dims):
+            if j < len(remaining_values):
+                val = remaining_values[j]
+                array_key_parts.append(f"{dim.label}{val:04d}")
+
+        # Create the final array key with leading underscore
+        base_key = "_".join(array_key_parts) if array_key_parts else "0"
+        return f"_{base_key}"
+
+    def _array_key_to_image_id(self, array_key: str) -> str:
+        """Convert array_key to image_id format for OME metadata.
+
+        Examples
+        --------
+        - "_p0000_g0001" -> "0:1"
+        - "_p0001" -> "1"
+        - "_0" -> "0"
+        """
+        # Remove leading underscore
+        key = array_key.lstrip("_")
+
+        # Extract position indices from array_key like "p0000_g0001_r0002"
+        parts = [p for p in key.split("_") if p]
+
+        if len(parts) == 1:
+            if (name := parts[0]).isdigit():
+                return name
+            else:
+                # keep only numeric characters
+                name = "".join(c for c in name if c.isdigit())
+                return str(int(name))
+
+        indices = []
+        for part in parts:
+            if part and len(part) > 1:
+                try:
+                    indices.append(str(int(part[1:])))
+                except ValueError:
+                    continue
+
+        return ":".join(indices) if indices else "0"
+
     def _write_to_backend(
         self, array_key: str, index: tuple[int, ...], frame: np.ndarray
     ) -> None:
@@ -265,10 +299,8 @@ class TifffileStream(MultiPositionOMEStream):
             return
 
         try:
-            # Get the FrameIndex from the mapping
-            frame_idx = self._array_key_to_frame_idx[array_key]
-            # Use the image_id property from FrameIndex
-            image_id = frame_idx.image_id
+            # Convert array_key to image_id for metadata
+            image_id = self._array_key_to_image_id(array_key)
 
             # Create position-specific OME metadata using the full image_id
             position_ome = _create_position_specific_ome(image_id, metadata)

@@ -4,7 +4,7 @@ import abc
 from abc import abstractmethod
 from itertools import product
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, NamedTuple
+from typing import TYPE_CHECKING, ClassVar
 
 from typing_extensions import Self
 
@@ -15,60 +15,6 @@ if TYPE_CHECKING:
     import numpy as np
 
     from ._dimensions import Dimension
-
-
-class FrameIndex(NamedTuple):
-    """Index information for a frame in a multi-dimensional acquisition.
-
-    This is used to support multi-axis positional dimensions (p, g, r, etc.)
-    with hierarchical organization and Image IDs for metadata.
-
-    Attributes
-    ----------
-    array_key : str
-        The key identifying which array/file this frame belongs to.
-        Examples: "p0000", "p0000_g0001", "p0000_g0001_r0002", "_p0000"
-    dim_index : tuple[int, ...]
-        The index tuple for non-positional dimensions (t, c, z).
-    """
-
-    array_key: str
-    dim_index: tuple[int, ...]
-
-    @property
-    def image_id(self) -> str:
-        """Convert array_key to image_id format for OME metadata.
-
-        Examples
-        --------
-        - "p0000_g0001" -> "0:1"
-        - "_p0000_g0001" -> "0:1" (leading underscore stripped)
-        - "p0001" -> "1"
-        - "0" -> "0"
-        """
-        # Remove leading underscore if present (TIFF variant)
-        key = self.array_key.lstrip("_")
-
-        # Extract position indices from array_key like "p0000_g0001_r0002"
-        parts = [p for p in key.split("_") if p]
-
-        if len(parts) == 1:
-            if (name := parts[0]).isdigit():
-                return name
-            else:
-                # keep only numeric characters
-                name = "".join(c for c in name if c.isdigit())
-                return str(int(name))
-
-        indices = []
-        for part in parts:
-            if part and len(part) > 1:
-                try:
-                    indices.append(str(int(part[1:])))
-                except ValueError:
-                    continue
-
-        return ":".join(indices) if indices else "0"
 
 
 class OMEStream(abc.ABC):
@@ -167,8 +113,8 @@ class MultiPositionOMEStream(OMEStream):
     def __init__(self) -> None:
         # dimension info for position dimension, if any
         self._position_dim: Dimension | None = None
-        # A mapping of indices to FrameIndex
-        self._indices: dict[int, FrameIndex] = {}
+        # A mapping of frame indices to (array_key, dim_index) tuples
+        self._indices: dict[int, tuple[str, tuple[int, ...]]] = {}
         # number of times append() has been called
         self._append_count = 0
         # number of positions in the stream
@@ -257,8 +203,8 @@ class MultiPositionOMEStream(OMEStream):
             # The remaining values are the standard dimension indices
             idx = values[positional_count:] if positional_count > 0 else values
 
-            # Create index entry
-            self._indices[i] = FrameIndex(array_key, tuple(idx))
+            # Create index entry as a tuple
+            self._indices[i] = (array_key, tuple(idx))
 
         self._append_count = 0
         self._num_positions = num_positions
@@ -274,12 +220,11 @@ class MultiPositionOMEStream(OMEStream):
     ) -> str:
         """Create an array key from positional values.
 
-        Uses simple numeric keys ("0", "1", "2") when only position dimension exists.
-        Uses descriptive keys ("p0000_g0001") when multiple positional axes are present.
+        Default implementation uses simple numeric keys for all backends.
 
         Parameters
         ----------
-        positional_values : tuple[int, ...]
+        positional_values : tuple[int, ...],
             The values for all positional dimensions (p, g, r, etc.)
         positional_dims : list[Dimension]
             The positional dimensions (g, r, etc., excluding 'p')
@@ -289,39 +234,29 @@ class MultiPositionOMEStream(OMEStream):
         Returns
         -------
         str
-            The array key for this combination of positional values
+            The array key for this combination of positional values.
+            Default: simple numeric "0", "1", "2", etc.
         """
+        # For Zarr backends: use simple numeric format based on positional values
+        # Calculate linear index from positional dimensions only
         if not positional_values:
             return "0"
 
-        # If we only have position dimension (no other positional axes),
-        # use simple numeric format: "0", "1", "2", etc.
-        if position_dims and not positional_dims:
-            return str(positional_values[0])
-
-        # If we have no position dimension but have other positional dims,
-        # use simple numeric format if only one positional dim
-        if not position_dims and len(positional_dims) == 1:
-            return str(positional_values[0])
-
-        # Multiple positional axes: use descriptive format
-        array_key_parts = []
-
+        # Get the sizes of positional dimensions
+        dims_sizes = []
         if position_dims:
-            pos = positional_values[0]
-            array_key_parts.append(f"p{pos:04d}")
-            remaining_values = positional_values[1:]
-        else:
-            remaining_values = positional_values
+            dims_sizes.append(position_dims[0].size)
+        dims_sizes.extend([d.size for d in positional_dims])
 
-        # Add positional dimension parts
-        for j, dim in enumerate(positional_dims):
-            if j < len(remaining_values):
-                val = remaining_values[j]
-                array_key_parts.append(f"{dim.label}{val:04d}")
+        # Calculate linear index from positional values
+        linear_idx = 0
+        multiplier = 1
+        for i in reversed(range(len(positional_values))):
+            linear_idx += positional_values[i] * multiplier
+            if i < len(dims_sizes):
+                multiplier *= dims_sizes[i]
 
-        # Create the final array key
-        return "_".join(array_key_parts) if array_key_parts else "0"
+        return str(linear_idx)
 
     @abstractmethod
     def _write_to_backend(
@@ -348,6 +283,6 @@ class MultiPositionOMEStream(OMEStream):
         if not self.is_active():
             msg = "Stream is closed or uninitialized. Call create() first."
             raise RuntimeError(msg)
-        frame_idx = self._indices[self._append_count]
-        self._write_to_backend(frame_idx.array_key, frame_idx.dim_index, frame)
+        array_key, dim_index = self._indices[self._append_count]
+        self._write_to_backend(array_key, dim_index, frame)
         self._append_count += 1

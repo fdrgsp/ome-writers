@@ -47,19 +47,15 @@ def test_tiff_grid_only(backend: AvailableBackend, tmp_path: Path) -> None:
     assert len(stream._positional_dims) == 1
     assert stream._positional_dims[0].label == "g"
 
-    # Check array keys are correct
-    assert stream._indices[0].array_key == "_g0000"
-    assert stream._indices[0].dim_index == (0, 0)  # (t=0, c=0)
-    assert stream._indices[1].array_key == "_g0000"
-    assert stream._indices[1].dim_index == (1, 0)  # (t=1, c=0)
-    assert stream._indices[2].array_key == "_g0001"
-    assert stream._indices[2].dim_index == (0, 0)
-    assert stream._indices[3].array_key == "_g0001"
-    assert stream._indices[3].dim_index == (1, 0)
+    # Check array keys are correct (tuples: (array_key, dim_index))
+    assert stream._indices[0] == ("_g0000", (0, 0))  # (t=0, c=0)
+    assert stream._indices[1] == ("_g0000", (1, 0))  # (t=1, c=0)
+    assert stream._indices[2] == ("_g0001", (0, 0))
+    assert stream._indices[3] == ("_g0001", (1, 0))
 
-    # Check image_id conversion
-    assert stream._indices[0].image_id == "0"
-    assert stream._indices[2].image_id == "1"
+    # Check image_id conversion using the method
+    assert stream._array_key_to_image_id("_g0000") == "0"
+    assert stream._array_key_to_image_id("_g0001") == "1"
 
 
 def test_tiff_position_and_grid(backend: AvailableBackend, tmp_path: Path) -> None:
@@ -95,17 +91,16 @@ def test_tiff_position_and_grid(backend: AvailableBackend, tmp_path: Path) -> No
     assert len(stream._positional_dims) == 1
     assert stream._positional_dims[0].label == "g"
 
-    # Check first few array keys
-    assert stream._indices[0].array_key == "_p0000_g0000"
-    assert stream._indices[0].dim_index == (0, 0)  # (t=0, c=0)
-    assert stream._indices[2].array_key == "_p0000_g0001"
-    assert stream._indices[6].array_key == "_p0001_g0000"
+    # Check first few array keys (tuples: (array_key, dim_index))
+    assert stream._indices[0] == ("_p0000_g0000", (0, 0))  # (t=0, c=0)
+    assert stream._indices[2] == ("_p0000_g0001", (0, 0))
+    assert stream._indices[6] == ("_p0001_g0000", (0, 0))
 
-    # Check image_id conversion for multi-axis
-    assert stream._indices[0].image_id == "0:0"  # p=0, g=0
-    assert stream._indices[2].image_id == "0:1"  # p=0, g=1
-    assert stream._indices[4].image_id == "0:2"  # p=0, g=2
-    assert stream._indices[6].image_id == "1:0"  # p=1, g=0
+    # Check image_id conversion for multi-axis using the method
+    assert stream._array_key_to_image_id("_p0000_g0000") == "0:0"  # p=0, g=0
+    assert stream._array_key_to_image_id("_p0000_g0001") == "0:1"  # p=0, g=1
+    assert stream._array_key_to_image_id("_p0000_g0002") == "0:2"  # p=0, g=2
+    assert stream._array_key_to_image_id("_p0001_g0000") == "1:0"  # p=1, g=0
 
 
 def test_tiff_position_grid_other(backend: AvailableBackend, tmp_path: Path) -> None:
@@ -143,7 +138,7 @@ def test_tiff_position_grid_other(backend: AvailableBackend, tmp_path: Path) -> 
     assert stream._positional_dims[0].label == "g"
     assert stream._positional_dims[1].label == "o"
 
-    # Check all array keys follow p_g_o pattern
+    # Check all array keys follow p_g_o pattern (tuples: (array_key, dim_index))
     expected_keys = [
         "_p0000_g0000_o0000",
         "_p0000_g0000_o0001",
@@ -155,14 +150,21 @@ def test_tiff_position_grid_other(backend: AvailableBackend, tmp_path: Path) -> 
         "_p0001_g0001_o0001",
     ]
     for i, expected_key in enumerate(expected_keys):
-        assert stream._indices[i].array_key == expected_key
-        assert stream._indices[i].dim_index == (0, 0)  # (t=0, c=0)
+        assert stream._indices[i] == (expected_key, (0, 0))  # (t=0, c=0)
 
-    # Check image_id conversion for 3-axis
-    assert stream._indices[0].image_id == "0:0:0"  # p=0, g=0, o=0
-    assert stream._indices[1].image_id == "0:0:1"  # p=0, g=0, o=1
-    assert stream._indices[2].image_id == "0:1:0"  # p=0, g=1, o=0
-    assert stream._indices[4].image_id == "1:0:0"  # p=1, g=0, o=0
+    # Check image_id conversion for 3-axis using the method
+    assert (
+        stream._array_key_to_image_id("_p0000_g0000_o0000") == "0:0:0"
+    )  # p=0, g=0, o=0
+    assert (
+        stream._array_key_to_image_id("_p0000_g0000_o0001") == "0:0:1"
+    )  # p=0, g=0, o=1
+    assert (
+        stream._array_key_to_image_id("_p0000_g0001_o0000") == "0:1:0"
+    )  # p=0, g=1, o=0
+    assert (
+        stream._array_key_to_image_id("_p0001_g0000_o0000") == "1:0:0"
+    )  # p=1, g=0, o=0
 
 
 def test_zarr_with_positional_dims(backend: AvailableBackend, tmp_path: Path) -> None:
@@ -212,7 +214,8 @@ def test_zarr_with_positional_dims(backend: AvailableBackend, tmp_path: Path) ->
 
     # Should have 4 unique arrays (2 positions x 2 grids)
     assert len(unique_keys) == 4
-    expected_keys = ["p0000_g0000", "p0000_g0001", "p0001_g0000", "p0001_g0001"]
+    # Zarr uses simple numeric keys
+    expected_keys = ["0", "1", "2", "3"]
     assert unique_keys == expected_keys
 
     # Each array should have 2 frames (2 timepoints)
