@@ -287,7 +287,7 @@ thread_counter = count()
 
 
 def _create_position_specific_ome(
-    position_idx: int, current_ome: ome.OME, incoming_ome: ome.OME
+    position_idx: int, current_metadata: ome.OME, metadata: ome.OME
 ) -> ome.OME:
     """Create OME metadata for a specific position from complete metadata.
 
@@ -298,22 +298,24 @@ def _create_position_specific_ome(
     image_id = f"Image:{position_idx}"
 
     # Find an image by its ID in the given list of images
-    incoming_image = next(img for img in incoming_ome.images if img.id == image_id)
+    incoming_image = next(img for img in metadata.images if img.id == image_id)
 
     # since we are processing one position at a time, we will only have one image
     # in current_ome.images
-    curr_image = current_ome.images[0] if len(current_ome.images) > 0 else None
+    curr_image = (
+        current_metadata.images[0] if len(current_metadata.images) > 0 else None
+    )
 
     if curr_image is not None:
         updated_pixels = _copy_tiffdata_blocks(curr_image.pixels, incoming_image.pixels)
         incoming_image = incoming_image.model_copy(update={"pixels": updated_pixels})
 
-    position_plates = _extract_position_plates(incoming_ome, image_id)
+    position_plates = _extract_position_plates(metadata, image_id)
 
     return ome.OME(
-        uuid=incoming_ome.uuid,
+        uuid=metadata.uuid,
         images=[incoming_image],
-        instruments=incoming_ome.instruments,
+        instruments=metadata.instruments,
         plates=position_plates,
     )
 
