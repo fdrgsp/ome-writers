@@ -196,11 +196,11 @@ class TifffileStream(MultiPositionOMEStream):
             )
             return
 
-        current_ome = self._ome.OME.from_xml(thread._ome_xml)
+        current_metadata = self._ome.OME.from_xml(thread._ome_xml)
 
         try:
             position_ome = _create_position_specific_ome(
-                position_idx, current_ome, metadata
+                position_idx, current_metadata, metadata
             )
             # Create ASCII version for tifffile.tiffcomment since tifffile.tiffcomment
             # requires ASCII strings
