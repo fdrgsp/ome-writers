@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 import numpy as np
 
@@ -73,7 +73,6 @@ def create_stream(
     *,
     backend: Literal[BackendName, "auto"] = "auto",
     overwrite: bool = False,
-    **backend_kwargs: Any,
 ) -> OMEStream:
     """Create a stream for writing OME-TIFF or OME-ZARR data.
 
@@ -97,8 +96,6 @@ def create_stream(
         Default is "auto".
     overwrite : bool, optional
         Whether to overwrite existing files or directories. Default is False.
-    **backend_kwargs
-        Additional backend-specific keyword arguments.
 
     Returns
     -------
@@ -106,9 +103,7 @@ def create_stream(
         A configured stream ready for writing frames.
     """
     stream = init_stream(path, backend=backend)
-    return stream.create(
-        str(path), np.dtype(dtype), dimensions, overwrite=overwrite, **backend_kwargs
-    )
+    return stream.create(str(path), np.dtype(dtype), dimensions, overwrite=overwrite)
 
 
 def _autobackend(path: str | Path) -> Literal["acquire-zarr", "tensorstore", "tiff"]:

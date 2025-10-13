@@ -50,8 +50,6 @@ class OMEStream(abc.ABC):
             Sequence of dimension information describing the data structure.
         overwrite : bool, optional
             Whether to overwrite existing files or directories. Default is False.
-        **kwargs : Any
-            Additional backend-specific keyword arguments.
 
         Returns
         -------
