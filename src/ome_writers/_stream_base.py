@@ -4,7 +4,7 @@ import abc
 from abc import abstractmethod
 from itertools import product
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
@@ -37,7 +37,6 @@ class OMEStream(abc.ABC):
         dimensions: Sequence[Dimension],
         *,
         overwrite: bool = False,
-        **kwargs: Any,
     ) -> Self:
         """Create a new stream for path, dtype, and dimensions.
 

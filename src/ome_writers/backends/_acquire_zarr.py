@@ -7,7 +7,7 @@ import json
 import shutil
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from typing_extensions import Self
 
@@ -49,7 +49,6 @@ class AcquireZarrStream(MultiPositionOMEStream):
         dimensions: Sequence[Dimension],
         *,
         overwrite: bool = False,
-        **kwargs: Any,
     ) -> Self:
         # Use MultiPositionOMEStream to handle position logic
         num_positions, non_position_dims = self._init_positions(dimensions)
