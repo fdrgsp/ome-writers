@@ -71,7 +71,11 @@ class PYMMCP:
     """
 
     def __init__(
-        self, sequence: useq.MDASequence, core: CMMCorePlus, dest: Path
+        self,
+        sequence: useq.MDASequence,
+        core: CMMCorePlus,
+        dest: Path,
+        backend: AvailableBackend,
     ) -> None:
         self._seq = sequence
         self._core = core
@@ -87,7 +91,7 @@ class PYMMCP:
             ),
             dtype=np.uint16,
             overwrite=True,
-            backend="tiff",
+            backend=backend.name,
         )
 
         @core.mda.events.sequenceStarted.connect
@@ -106,54 +110,98 @@ class PYMMCP:
         @core.mda.events.sequenceFinished.connect
         def _on_sequence_finished(sequence: useq.MDASequence) -> None:
             self._stream.flush()
-            ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
-            self._stream.update_ome_metadata(ome)
+            if hasattr(self._stream, "update_ome_metadata"):
+                ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
+                self._stream.update_ome_metadata(ome)
 
     def run(self) -> None:
         self._core.mda.run(self._seq)
 
 
-def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
-    """Test pymmcore_plus MDA with metadata update after acquisition."""
-
-    # skip if tifffile or ome-types is not installed
-    try:
-        import tifffile
-        from ome_types import from_xml
-    except ImportError:
-        pytest.skip("tifffile or ome-types is not installed")
-
-    seq = useq.MDASequence(
-        time_plan=useq.TIntervalLoops(interval=0.001, loops=2),  # type: ignore
+TEST_SEQ = [
+    useq.MDASequence(
         z_plan=useq.ZRangeAround(range=2, step=1),
         channels=["DAPI", "FITC"],  # type: ignore
         stage_positions=useq.WellPlatePlan(
             plate=useq.WellPlate.from_str("96-well"),
             a1_center_xy=(0, 0),
             selected_wells=((0, 0), (0, 1)),
+            well_points_plan=useq.GridRowsColumns(rows=1, columns=2),
         ),
-    )
+    ),
+    useq.MDASequence(
+        z_plan=useq.ZRangeAround(range=2, step=1),
+        channels=["DAPI", "FITC"],  # type: ignore
+        stage_positions=[(0, 0), (0.1, 0.1), (0.2, 0.2)],  # type: ignore
+    ),
+]
+
+
+@pytest.mark.parametrize("seq", TEST_SEQ)
+def test_pymmcore_plus_mda_metadata_update(
+    tmp_path: Path,
+    backend: AvailableBackend,
+    seq: useq.MDASequence,
+) -> None:
+    """Test pymmcore_plus MDA with metadata update after acquisition."""
+    # Zarr backend tests
+    if backend.file_ext.endswith(".zarr"):
+        dest = tmp_path / "test_meta_update.ome.zarr"
+    else:  # TIFF backend tests
+        dest = tmp_path / "test_meta_update.ome.tiff"
 
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
-    dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
-
-    pymm = PYMMCP(seq, core, dest)
+    pymm = PYMMCP(seq, core, dest, backend=backend)
     pymm.run()
 
-    # reopen the file and validate ome metadata
-    for idx, f in enumerate(sorted(tmp_path.glob("*.ome.tiff"))):
-        with tifffile.TiffFile(f) as tif:
-            ome_xml = tif.ome_metadata
-            if ome_xml is not None:
-                # validate by attempting to parse
-                ome = from_xml(ome_xml)
-                # assert there is plate information
-                assert ome.plates
+    if backend.file_ext.endswith(".zarr"):
+        assert dest.exists()
+        for p in range(len(seq.stage_positions)):
+            assert (dest / str(p)).exists()
+        assert (dest / "zarr.json").exists()
+        return
 
-                assert len(ome.images) == 1
-                assert (
-                    ome.images[0].name
-                    == f"test_mda_tiff_metadata_update_p{idx:03d}.ome"
-                )
+    else:  # TIFF backend tests
+        try:
+            import tifffile
+            from ome_types import from_xml
+        except ImportError:
+            pytest.skip("tifffile or ome-types is not installed")
+        uuid_map = {}
+
+        # Reopen files and validate OME metadata
+        for idx, f in enumerate(sorted(tmp_path.glob("*.ome.tiff"))):
+            with tifffile.TiffFile(f) as tif:
+                ome_xml = tif.ome_metadata
+                if ome_xml is not None:
+                    # Validate by attempting to parse
+                    ome = from_xml(ome_xml)
+
+                    # Standard mode or first file in ome_main_file mode
+                    assert not ome.binary_only
+
+                    # each file has one image
+                    assert len(ome.images) == 1
+                    # UUID should be preserved from original file
+                    if ome.images[0].pixels.tiff_data_blocks:
+                        uuid = ome.images[0].pixels.tiff_data_blocks[0].uuid
+                        if uuid is not None:
+                            uuid_map[idx] = uuid.value
+
+                    # Assert there is plate information if using WellPlatePlan
+                    if isinstance(seq.stage_positions, useq.WellPlatePlan):
+                        assert ome.plates
+
+                    # Verify image name (preserved from original filename)
+                    if isinstance(seq.stage_positions, useq.WellPlatePlan):
+                        map_names = {
+                            0: f"A1_0000_p{idx:04d}",
+                            1: f"A1_0001_p{idx:04d}",
+                            2: f"A2_0000_p{idx:04d}",
+                            3: f"A2_0001_p{idx:04d}",
+                        }
+                        assert ome.images[0].name == map_names[idx]
+                    else:
+                        assert ome.images[0].name == f"p{idx:04d}"

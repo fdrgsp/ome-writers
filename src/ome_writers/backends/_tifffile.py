@@ -308,12 +308,7 @@ def _create_position_specific_ome(
         updated_pixels = _copy_tiff_data_blocks(
             current_image.pixels, position_image.pixels
         )
-        position_image = position_image.model_copy(
-            update={
-                "name": current_image.name,
-                "pixels": updated_pixels,
-            }
-        )
+        position_image = position_image.model_copy(update={"pixels": updated_pixels})
 
     position_plates = _extract_position_plates(metadata, target_image_id)
 
@@ -328,6 +323,7 @@ def _create_position_specific_ome(
 def _copy_tiff_data_blocks(
     source_pixels: ome.Pixels | None, destination_pixels: ome.Pixels | None
 ) -> ome.Pixels | None:
+    """Copy tiff_data_blocks from source_pixels to destination_pixels."""
     if (
         destination_pixels is None
         or source_pixels is None
