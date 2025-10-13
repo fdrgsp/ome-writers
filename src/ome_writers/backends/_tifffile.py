@@ -287,40 +287,38 @@ thread_counter = count()
 
 
 def _create_position_specific_ome(
-    position_idx: int, current_ome: ome.OME, metadata: ome.OME
+    position_idx: int, current_ome: ome.OME, incoming_ome: ome.OME
 ) -> ome.OME:
     """Create OME metadata for a specific position from complete metadata.
 
     Extracts only the Image and related metadata for the given position index.
     Assumes Image IDs follow the pattern "Image:{position_idx}".
     """
-    target_image_id = f"Image:{position_idx}"
+    # The target image ID for the given position index
+    image_id = f"Image:{position_idx}"
 
     # Find an image by its ID in the given list of images
-    # will raise StopIteration if not found (caller should catch error)
-    position_image = next(img for img in metadata.images if img.id == target_image_id)
+    incoming_image = next(img for img in incoming_ome.images if img.id == image_id)
 
     # since we are processing one position at a time, we will only have one image
     # in current_ome.images
-    current_image = current_ome.images[0] if len(current_ome.images) > 0 else None
+    curr_image = current_ome.images[0] if len(current_ome.images) > 0 else None
 
-    if current_image is not None:
-        updated_pixels = _copy_tiff_data_blocks(
-            current_image.pixels, position_image.pixels
-        )
-        position_image = position_image.model_copy(update={"pixels": updated_pixels})
+    if curr_image is not None:
+        updated_pixels = _copy_tiffdata_blocks(curr_image.pixels, incoming_image.pixels)
+        incoming_image = incoming_image.model_copy(update={"pixels": updated_pixels})
 
-    position_plates = _extract_position_plates(metadata, target_image_id)
+    position_plates = _extract_position_plates(incoming_ome, image_id)
 
     return ome.OME(
-        uuid=metadata.uuid,
-        images=[position_image],
-        instruments=metadata.instruments,
+        uuid=incoming_ome.uuid,
+        images=[incoming_image],
+        instruments=incoming_ome.instruments,
         plates=position_plates,
     )
 
 
-def _copy_tiff_data_blocks(
+def _copy_tiffdata_blocks(
     source_pixels: ome.Pixels | None, destination_pixels: ome.Pixels | None
 ) -> ome.Pixels | None:
     """Copy tiff_data_blocks from source_pixels to destination_pixels."""

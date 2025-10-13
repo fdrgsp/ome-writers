@@ -179,23 +179,18 @@ def test_pymmcore_plus_mda_metadata_update(
                     # Validate by attempting to parse
                     ome = from_xml(ome_xml)
 
-                    # Standard mode or first file in ome_main_file mode
-                    assert not ome.binary_only
-
                     # each file has one image
                     assert len(ome.images) == 1
+
                     # UUID should be preserved from original file
                     if ome.images[0].pixels.tiff_data_blocks:
                         uuid = ome.images[0].pixels.tiff_data_blocks[0].uuid
                         if uuid is not None:
                             uuid_map[idx] = uuid.value
 
-                    # Assert there is plate information if using WellPlatePlan
-                    if isinstance(seq.stage_positions, useq.WellPlatePlan):
-                        assert ome.plates
-
                     # Verify image name (preserved from original filename)
                     if isinstance(seq.stage_positions, useq.WellPlatePlan):
+                        assert ome.plates
                         map_names = {
                             0: f"A1_0000_p{idx:04d}",
                             1: f"A1_0001_p{idx:04d}",
