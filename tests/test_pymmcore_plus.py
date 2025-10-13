@@ -158,17 +158,9 @@ def test_pymmcore_plus_mda_metadata_update(
         # Skip zarr for ome_main_file mode since it's TIFF-specific
         if ome_main_file:
             pytest.skip("ome_main_file mode is specific to TIFF backend")
-
         dest = tmp_path / "test_meta_update.ome.zarr"
 
-    else:  # backend.file_ext.endswith(".tiff"):
-        # TIFF backend tests
-        try:
-            import tifffile
-            from ome_types import from_xml
-        except ImportError:
-            pytest.skip("tifffile or ome-types is not installed")
-
+    else:  # TIFF backend tests
         dest = tmp_path / "test_meta_update.ome.tiff"
 
     core = CMMCorePlus()
@@ -184,7 +176,12 @@ def test_pymmcore_plus_mda_metadata_update(
         assert (dest / "zarr.json").exists()
         return
 
-    else:
+    else:  # TIFF backend tests
+        try:
+            import tifffile
+            from ome_types import from_xml
+        except ImportError:
+            pytest.skip("tifffile or ome-types is not installed")
         uuid_map = {}
 
         # Reopen files and validate OME metadata
