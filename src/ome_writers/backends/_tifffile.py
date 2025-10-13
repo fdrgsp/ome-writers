@@ -260,7 +260,7 @@ class TifffileStream(MultiPositionOMEStream):
             return
 
         # Parse the current OME metadata to preserve image names and tiff_data_blocks
-        current_ome = self._ome.OME.from_xml(thread._ome_xml)
+        current_metadata = self._ome.OME.from_xml(thread._ome_xml)
 
         try:
             # For ome_main_file mode with position > 0, use BinaryOnly reference
@@ -279,7 +279,7 @@ class TifffileStream(MultiPositionOMEStream):
                 # create position-specific metadata
                 is_main_file = self._main_file_ome and position_idx == 0
                 position_ome = _create_position_specific_ome(
-                    position_idx, current_ome, metadata, is_main_file
+                    position_idx, current_metadata, metadata, is_main_file
                 )
 
             xml = position_ome.to_xml()
