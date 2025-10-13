@@ -99,7 +99,7 @@ class TifffileStream(MultiPositionOMEStream):
             tczyx_dims, dtype, fnames, num_positions
         )
 
-        # Create a thread for each position
+        # Create a memmap for each position and respective ome metadata
         for p_idx, (fname, ome_xml) in enumerate(
             zip(fnames, ome_xml_list, strict=True)
         ):
