@@ -308,11 +308,12 @@ def _create_position_specific_ome(
         current_metadata.images[0] if len(current_metadata.images) > 0 else None
     )
 
+    updated_metadata_image = new_metadata_image
     if current_metadata_image is not None:
         updated_pixels = _copy_tiff_data_blocks(
             current_metadata_image.pixels, new_metadata_image.pixels
         )
-        new_metadata_image = new_metadata_image.model_copy(
+        updated_metadata_image = new_metadata_image.model_copy(
             update={"pixels": updated_pixels}
         )
 
@@ -320,7 +321,7 @@ def _create_position_specific_ome(
 
     return ome.OME(
         uuid=new_metadata.uuid,
-        images=[new_metadata_image],
+        images=[updated_metadata_image],
         instruments=new_metadata.instruments,
         plates=position_plates,
     )
