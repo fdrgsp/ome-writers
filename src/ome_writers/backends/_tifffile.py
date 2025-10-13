@@ -259,34 +259,32 @@ class TifffileStream(MultiPositionOMEStream):
             )
             return
 
+        # Parse the current OME metadata to preserve image names and tiff_data_blocks
+        current_ome = self._ome.OME.from_xml(thread._ome_xml)
+
         try:
-            # For ome_main_file mode, only first position gets full metadata
+            # For ome_main_file mode with position > 0, use BinaryOnly reference
             if self._main_file_ome and position_idx > 0:
-                # Create BinaryOnly reference to the first position file
                 if not self._main_file_uuid or not self._main_file_name:
                     msg = (
                         "Main file UUID and name not set. "
                         "Cannot create BinaryOnly reference."
                     )
                     raise ValueError(msg)
-                binary_only_ome = _create_binary_only_ome(
+                position_ome = _create_binary_only_ome(
                     self._main_file_name, self._main_file_uuid
                 )
-                xml = binary_only_ome.to_xml()
-                ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
-            elif self._main_file_ome and position_idx == 0:
-                # For position 0 in ome_main_file mode, write the complete
-                # metadata with all positions
-                xml = metadata.to_xml()
-                ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
             else:
-                # For standard mode (ome_main_file=False), write position-specific
-                # metadata
-                position_ome = _create_position_specific_ome(position_idx, metadata)
-                # Create ASCII version for tifffile.tiffcomment since
-                # tifffile.tiffcomment requires ASCII strings
-                xml = position_ome.to_xml()
-                ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
+                # For both ome_main_file mode (position 0) and standard mode,
+                # create position-specific metadata
+                is_main_file = self._main_file_ome and position_idx == 0
+                position_ome = _create_position_specific_ome(
+                    position_idx, current_ome, metadata, is_main_file
+                )
+
+            xml = position_ome.to_xml()
+            ascii_xml = xml.replace("µ", "&#x00B5;").encode("ascii")
+
         except Exception as e:
             raise RuntimeError(
                 f"Failed to create position-specific OME metadata for position "
@@ -368,25 +366,111 @@ thread_counter = count()
 # helpers for position-specific OME metadata updates
 
 
-def _create_position_specific_ome(position_idx: int, metadata: ome.OME) -> ome.OME:
+def _create_position_specific_ome(
+    position_idx: int,
+    current_ome: ome.OME,
+    metadata: ome.OME,
+    is_main_file: bool = False,
+) -> ome.OME:
     """Create OME metadata for a specific position from complete metadata.
 
-    Extracts only the Image and related metadata for the given position index.
-    Assumes Image IDs follow the pattern "Image:{position_idx}".
+    Always preserves tiff_data_blocks (UUID references) and image names.
+
+    Parameters
+    ----------
+    position_idx : int
+        The position index to extract metadata for
+    current_ome : ome.OME
+        The current OME metadata with original image names and tiff_data_blocks
+    metadata : ome.OME
+        The new OME metadata to be updated
+    is_main_file : bool, optional
+        If True, processes ALL images in metadata (for ome_main_file mode, position 0).
+        If False, extracts only the single image for the given position_idx.
+        Default is False.
+
+    Returns
+    -------
+    ome.OME
+        Updated OME metadata with preserved tiff_data_blocks and image names
     """
-    target_image_id = f"Image:{position_idx}"
+    if is_main_file:
+        # ome_main_file mode (position 0): preserve ALL images' tiff_data
+        return _preserve_tiff_data(current_ome, metadata)
+    else:
+        # Standard mode: extract single position's metadata
+        target_image_id = f"Image:{position_idx}"
 
-    # Find an image by its ID in the given list of images
-    # will raise StopIteration if not found (caller should catch error)
-    position_image = next(img for img in metadata.images if img.id == target_image_id)
-    position_plates = _extract_position_plates(metadata, target_image_id)
+        # Find the image by its ID in the given list of images
+        position_image = next(
+            img for img in metadata.images if img.id == target_image_id
+        )
 
-    return ome.OME(
-        uuid=metadata.uuid,
-        images=[position_image],
-        instruments=metadata.instruments,
-        plates=position_plates,
-    )
+        # Extract only the relevant image and plates for this position
+        position_metadata = ome.OME(
+            uuid=metadata.uuid,
+            images=[position_image],
+            instruments=metadata.instruments,
+            plates=_extract_position_plates(metadata, target_image_id),
+        )
+        # Use the same preservation logic as main file mode
+        return _preserve_tiff_data(current_ome, position_metadata)
+
+
+def _preserve_tiff_data(current_ome: ome.OME, updated_ome: ome.OME) -> ome.OME:
+    """Preserve image names and tiff_data_blocks from current metadata.
+
+    This function takes the updated metadata and copies the tiff_data_blocks from the
+    current metadata to preserve file references.
+
+    Parameters
+    ----------
+    current_ome : ome.OME
+        The current OME metadata with original image names and tiff_data_blocks
+    updated_ome : ome.OME
+        The new OME metadata to be updated
+
+    Returns
+    -------
+    ome.OME
+        Updated metadata with preserved image names and tiff_data_blocks
+    """
+    # Create a mapping of current images by their ID
+    current_images_map = {img.id: img for img in current_ome.images}
+
+    # Update each image in the new metadata
+    updated_images = []
+    for new_image in updated_ome.images:
+        current_image = current_images_map.get(new_image.id)
+        if current_image is not None:
+            # Preserve the image name and tiff_data_blocks
+            updated_pixels = _copy_tiff_data_blocks(
+                current_image.pixels, new_image.pixels
+            )
+            updated_image = new_image.model_copy(update={"pixels": updated_pixels})
+            updated_images.append(updated_image)
+        else:
+            updated_images.append(new_image)
+
+    return updated_ome.model_copy(update={"images": updated_images})
+
+
+def _copy_tiff_data_blocks(
+    source_pixels: ome.Pixels | None, destination_pixels: ome.Pixels | None
+) -> ome.Pixels | None:
+    if (
+        destination_pixels is None
+        or source_pixels is None
+        or source_pixels.tiff_data_blocks is None
+    ):
+        return destination_pixels
+
+    # Deep copy the tiff_data_blocks to avoid reference issues
+    copied_blocks = [
+        block.model_copy(deep=True) for block in source_pixels.tiff_data_blocks
+    ]
+
+    return destination_pixels.model_copy(update={"tiff_data_blocks": copied_blocks})
 
 
 def _extract_position_plates(ome: ome.OME, target_image_id: str) -> list[ome.Plate]:

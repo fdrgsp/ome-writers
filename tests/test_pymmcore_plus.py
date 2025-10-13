@@ -8,8 +8,6 @@ import pytest
 
 import ome_writers as omew
 
-from .conftest import AvailableBackend
-
 try:
     import useq
     from pymmcore_plus import CMMCorePlus
@@ -22,6 +20,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
+
+    from .conftest import AvailableBackend
 
 
 def test_pymmcore_plus_mda(tmp_path: Path, backend: AvailableBackend) -> None:
@@ -122,13 +122,13 @@ class PYMMCP:
 
 TEST_SEQ = [
     useq.MDASequence(
-        time_plan=useq.TIntervalLoops(interval=0.001, loops=2),  # type: ignore
         z_plan=useq.ZRangeAround(range=2, step=1),
         channels=["DAPI", "FITC"],  # type: ignore
         stage_positions=useq.WellPlatePlan(
             plate=useq.WellPlate.from_str("96-well"),
             a1_center_xy=(0, 0),
             selected_wells=((0, 0), (0, 1)),
+            well_points_plan=useq.GridRowsColumns(rows=1, columns=2),
         ),
     ),
     useq.MDASequence(
@@ -147,7 +147,7 @@ def test_pymmcore_plus_mda_metadata_update(
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
-    dest = tmp_path / "test_mda_tiff_metadata_update.ome.tiff"
+    dest = tmp_path / "test_meta_update.ome.tiff"
 
     pymm = PYMMCP(seq, core, dest, backend=backend)
     pymm.run()
@@ -158,8 +158,9 @@ def test_pymmcore_plus_mda_metadata_update(
             from ome_types import from_xml
         except ImportError:
             pytest.skip("tifffile or ome-types is not installed")
+        uuid_map = {}
         # reopen the file and validate ome metadata
-        for f in list(tmp_path.glob("*.ome.tiff")):
+        for idx, f in enumerate(sorted(tmp_path.glob("*.ome.tiff"))):
             with tifffile.TiffFile(f) as tif:
                 ome_xml = tif.ome_metadata
                 if ome_xml is not None:
@@ -168,6 +169,24 @@ def test_pymmcore_plus_mda_metadata_update(
                     # assert there is plate information
                     if isinstance(seq.stage_positions, useq.WellPlatePlan):
                         assert ome.plates
+                    # verify tiff_data_blocks uuid
+                    assert len(ome.images) == 1
+                    uuid_map[idx] = ome.images[0].pixels.tiff_data_blocks[0].uuid
+                    # verify image name
+                    if isinstance(seq.stage_positions, useq.WellPlatePlan):
+                        if idx == 0:
+                            well_name = f"A1_0000_p{idx:04d}"
+                        elif idx == 1:
+                            well_name = f"A1_0001_p{idx:04d}"
+                        elif idx == 2:
+                            well_name = f"A2_0000_p{idx:04d}"
+                        else:
+                            well_name = f"A2_0001_p{idx:04d}"
+                    else:
+                        well_name = f"p{idx:04d}"
+                    assert ome.images[0].name == well_name
+        # assert uuids are all unique
+        assert len(uuid_map) == len(seq.stage_positions)
 
     elif backend.file_ext.endswith("zarr"):
         assert dest.exists()
@@ -176,8 +195,13 @@ def test_pymmcore_plus_mda_metadata_update(
         assert (dest / "zarr.json").exists()
 
 
-def test_pymmcore_plus_mda_tiff_metadata_main_file_meta_update(tmp_path: Path) -> None:
+@pytest.mark.parametrize("seq", TEST_SEQ)
+def test_pymmcore_plus_mda_tiff_metadata_main_file_meta_update(
+    tmp_path: Path, backend: AvailableBackend, seq: useq.MDASequence
+) -> None:
     """Test pymmcore_plus MDA with metadata update after acquisition."""
+    if backend.file_ext.endswith("zarr"):
+        pytest.skip("This test is specific to TIFF backend")
 
     # skip if tifffile or ome-types is not installed
     try:
@@ -186,26 +210,15 @@ def test_pymmcore_plus_mda_tiff_metadata_main_file_meta_update(tmp_path: Path) -
     except ImportError:
         pytest.skip("tifffile or ome-types is not installed")
 
-    seq = useq.MDASequence(
-        z_plan=useq.ZRangeAround(range=2, step=1),
-        channels=["DAPI", "FITC"],  # type: ignore
-        stage_positions=[(0, 0), (0.1, 0.1), (0.2, 0.2)],
-        # stage_positions=useq.WellPlatePlan(
-        #     plate=useq.WellPlate.from_str("96-well"),
-        #     a1_center_xy=(0, 0),
-        #     selected_wells=((0, 0), (0, 1)),
-        # ),
-    )
-
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
-    dest = tmp_path / "test_main_file_meta.ome.tiff"
+    dest = tmp_path / "test_main_file_meta_update.ome.tiff"
 
-    # Create backend for tiff
-    backend = AvailableBackend("tiff", omew.TifffileStream, ".ome.tiff", lambda p: p)
     pymm = PYMMCP(seq, core, dest, backend=backend, ome_main_file=True)
     pymm.run()
+
+    uuid_map = {}
 
     # reopen the file and validate ome metadata
     for idx, f in enumerate(sorted(tmp_path.glob("*.ome.tiff"))):
@@ -214,9 +227,35 @@ def test_pymmcore_plus_mda_tiff_metadata_main_file_meta_update(tmp_path: Path) -
             if ome_xml is not None:
                 # validate by attempting to parse
                 ome = from_xml(ome_xml)
-                # assert there is plate information
-                # assert ome.plates
+                # assert there is binary_only information
                 if idx > 0:
                     assert ome.binary_only
+                    assert ome.binary_only.uuid is not None
+                    # BinaryOnly should always reference the first file (position 0)
+                    assert ome.binary_only.uuid == uuid_map[0]
                 else:
                     assert not ome.binary_only
+                    # assert there is plate information
+                    if isinstance(seq.stage_positions, useq.WellPlatePlan):
+                        assert ome.plates
+                    # this is the first file, should have all metadata with all uuids
+                    for i, img in enumerate(ome.images):
+                        # verify image name
+                        if isinstance(seq.stage_positions, useq.WellPlatePlan):
+                            if idx == 0:
+                                well_name = f"A1_0000_p{idx:04d}"
+                            elif idx == 1:
+                                well_name = f"A1_0001_p{idx:04d}"
+                            elif idx == 2:
+                                well_name = f"A2_0000_p{idx:04d}"
+                            else:
+                                well_name = f"A2_0001_p{idx:04d}"
+                        else:
+                            well_name = f"p{idx:04d}"
+                        assert ome.images[0].name == well_name
+                        # verify tiff_data_blocks uuid
+                        uuid = img.pixels.tiff_data_blocks[0].uuid
+                        assert uuid is not None
+                        uuid_map[i] = uuid.value
+                    # assert uuids are all unique
+                    assert len(set(uuid_map.values())) == len(uuid_map)
