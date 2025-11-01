@@ -150,11 +150,18 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
     pymm.run()
 
     # reopen the file and validate ome metadata
-    for f in list(tmp_path.glob("*.ome.tiff")):
+    all_files = sorted(tmp_path.glob("*.ome.tiff"))
+    for idx, f in enumerate(all_files):
         with tifffile.TiffFile(f) as tif:
             ome_xml = tif.ome_metadata
             if ome_xml is not None:
                 # validate by attempting to parse
                 ome = from_xml(ome_xml)
-                # assert there is plate information
-                assert ome.plates
+                # For multi-file OME: first file has complete metadata,
+                # subsequent files have BinaryOnly references
+                if idx == 0:
+                    # First file should have plate information
+                    assert ome.plates
+                else:
+                    # Subsequent files should have BinaryOnly references
+                    assert ome.binary_only is not None
