@@ -97,14 +97,12 @@ class TifffileStream(MultiPositionOMEStream):
 
         fnames = self._prepare_files(self._path, self.num_positions, overwrite)
 
-        # Generate OME XML for each position
-        ome_xml_map = _generate_ome_xml_list(
-            self.storage_order_dims, dtype, fnames, self.num_positions
+        # Generate OME XML for each position and extract main file info for BinaryOnly
+        ome_xml_map, self._main_file_uuid, self._main_file_name = (
+            _get_ome_metadata_info(
+                self.storage_order_dims, dtype, fnames, self.num_positions
+            )
         )
-
-        # Set UUID and filename from first position for BinaryOnly references
-        if self.num_positions >= 1:
-            self._set_main_uuid_and_filename(ome_xml_map[0], fnames[0])
 
         # Create a memmap for each position
         for p_idx, fname in enumerate(fnames):
@@ -202,15 +200,6 @@ class TifffileStream(MultiPositionOMEStream):
         For TIFF, frames are written sequentially, so the index is not used.
         """
         self._queues[int(position_key)].put(frame)
-
-    def _set_main_uuid_and_filename(self, ome_xml: str, fname: str) -> None:
-        """Set main file UUID and name for BinaryOnly references."""
-        first_ome = self._ome.OME.from_xml(ome_xml)
-        if first_ome.images and first_ome.images[0].pixels.tiff_data_blocks:
-            tiff_data = first_ome.images[0].pixels.tiff_data_blocks[0]
-            if tiff_data.uuid:
-                self._main_file_uuid = tiff_data.uuid.value
-                self._main_file_name = Path(fname).name
 
     def _update_position_metadata(self, position_idx: int, metadata: ome.OME) -> None:
         """Add OME metadata to TIFF file efficiently without rewriting image data.
@@ -332,13 +321,13 @@ thread_counter = count()
 # helpers for OME metadata updates
 
 
-def _generate_ome_xml_list(
+def _get_ome_metadata_info(
     dims: Sequence[Dimension],
     dtype: np.dtype,
     filenames: list[str],
     num_positions: int,
-) -> dict[int, str]:
-    """Generate OME XML for each position file.
+) -> tuple[dict[int, str], str | None, str | None]:
+    """Generate OME XML for each position file and extract main file info.
 
     For single position: creates standard OME metadata.
     For multi-position: first file gets complete metadata, others get BinaryOnly.
@@ -356,15 +345,18 @@ def _generate_ome_xml_list(
 
     Returns
     -------
-    dict[int, str]
-        Dictionary mapping position index to OME-XML string
+    tuple[dict[int, str], str | None, str | None]
+        A tuple containing:
+        - Dictionary mapping position index to OME-XML string
+        - Main file UUID (None for single position)
+        - Main file name (None for single position)
     """
     if num_positions == 1:
         # Single position: standard OME metadata
         from ome_writers._dimensions import dims_to_ome
 
         ome_obj = dims_to_ome(dims, dtype=dtype, tiff_file_name=filenames[0])
-        return {0: ome_obj.to_xml()}
+        return {0: ome_obj.to_xml()}, None, None
 
     # Multi-position: first file gets complete metadata, others get BinaryOnly
     complete_ome = _create_multiposition_ome(dims, dtype, filenames)
@@ -388,7 +380,7 @@ def _generate_ome_xml_list(
         binary_only_ome = _create_binary_only_ome(main_file_name, main_file_uuid)
         ome_xml_map[p_idx] = binary_only_ome.to_xml()
 
-    return ome_xml_map
+    return ome_xml_map, main_file_uuid, main_file_name
 
 
 def _preserve_tiff_data(current_ome: ome.OME, updated_ome: ome.OME) -> ome.OME:
