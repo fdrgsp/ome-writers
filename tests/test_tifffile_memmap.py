@@ -17,7 +17,7 @@ except ImportError:
 
 from typing import TYPE_CHECKING
 
-from ome_writers.backends._tifffile_memmap import TifffileStream as MemmapStream
+from ome_writers.backends._tifffile import TifffileStream
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 def test_memmap_stream_is_available() -> None:
     """Test that the memmap stream is available when dependencies are installed."""
-    assert MemmapStream.is_available()
+    assert TifffileStream.is_available()
 
 
 @pytest.mark.parametrize(
@@ -44,7 +44,7 @@ def test_memmap_write(sizes: dict[str, int], np_dtype: type, tmp_path: Path) -> 
     )
     output_path = tmp_path / "test.ome.tiff"
 
-    stream = MemmapStream().create(str(output_path), dtype, dims)
+    stream = TifffileStream().create(str(output_path), dtype, dims, memmap=True)
     original_frames = list(data_gen)
     for frame in original_frames:
         stream.append(frame)
@@ -74,7 +74,9 @@ def test_memmap_custom_flush_interval(tmp_path: Path) -> None:
     )
     output_path = tmp_path / "test.ome.tiff"
 
-    stream = MemmapStream(flush_interval=5).create(str(output_path), dtype, dims)
+    stream = TifffileStream(flush_interval=5).create(
+        str(output_path), dtype, dims, memmap=True
+    )
     for frame in data_gen:
         stream.append(frame)
     stream.flush()
@@ -89,7 +91,7 @@ def test_memmap_multiposition(tmp_path: Path) -> None:
     )
     output_path = tmp_path / "test.ome.tiff"
 
-    stream = MemmapStream().create(str(output_path), dtype, dims)
+    stream = TifffileStream().create(str(output_path), dtype, dims, memmap=True)
     for frame in data_gen:
         stream.append(frame)
     stream.flush()
@@ -135,20 +137,24 @@ def test_memmap_overwrite_behavior(tmp_path: Path) -> None:
     data_gen, dims, dtype = omew.fake_data_for_sizes(
         sizes, chunk_sizes={"y": 16, "x": 16}
     )
-    stream = MemmapStream().create(str(output_path), dtype, dims)
+    stream = TifffileStream().create(str(output_path), dtype, dims, memmap=True)
     for frame in data_gen:
         stream.append(frame)
     stream.flush()
 
     # Without overwrite should fail
     with pytest.raises(FileExistsError, match=r".*already exists"):
-        MemmapStream().create(str(output_path), dtype, dims, overwrite=False)
+        TifffileStream().create(
+            str(output_path), dtype, dims, memmap=True, overwrite=False
+        )
 
     # With overwrite should succeed
     data_gen, dims, dtype = omew.fake_data_for_sizes(
         sizes, chunk_sizes={"y": 16, "x": 16}
     )
-    stream = MemmapStream().create(str(output_path), dtype, dims, overwrite=True)
+    stream = TifffileStream().create(
+        str(output_path), dtype, dims, memmap=True, overwrite=True
+    )
     for frame in data_gen:
         stream.append(frame)
     stream.flush()
@@ -157,7 +163,7 @@ def test_memmap_overwrite_behavior(tmp_path: Path) -> None:
 def test_memmap_error_handling() -> None:
     """Test error handling in memmap stream."""
     with pytest.raises(RuntimeError, match="Stream is closed or uninitialized"):
-        MemmapStream().append(np.zeros((64, 64), dtype=np.uint16))
+        TifffileStream().append(np.zeros((64, 64), dtype=np.uint16))
 
 
 def test_memmap_context_manager(tmp_path: Path) -> None:
@@ -166,9 +172,9 @@ def test_memmap_context_manager(tmp_path: Path) -> None:
         sizes={"t": 2, "y": 32, "x": 32}, chunk_sizes={"y": 16, "x": 16}
     )
     output_path = tmp_path / "test.ome.tiff"
-    stream = MemmapStream()
+    stream = TifffileStream()
 
-    with stream.create(str(output_path), dtype, dims) as s:
+    with stream.create(str(output_path), dtype, dims, memmap=True) as s:
         assert s.is_active()
         for frame in data_gen:
             s.append(frame)
@@ -184,7 +190,7 @@ def test_memmap_update_ome_metadata(tmp_path: Path) -> None:
     )
     output_path = tmp_path / "test.ome.tiff"
 
-    stream = MemmapStream().create(str(output_path), dtype, dims)
+    stream = TifffileStream().create(str(output_path), dtype, dims, memmap=True)
     for frame in data_gen:
         stream.append(frame)
     stream.flush()
@@ -235,7 +241,7 @@ def test_memmap_metadata_update_errors(
     )
     output_path = tmp_path / "test.ome.tiff"
 
-    stream = MemmapStream().create(str(output_path), dtype, dims)
+    stream = TifffileStream().create(str(output_path), dtype, dims, memmap=True)
     for frame in data_gen:
         stream.append(frame)
     stream.flush()
@@ -271,7 +277,7 @@ def test_memmap_metadata_update_readonly_file(tmp_path: Path) -> None:
     )
     output_path = tmp_path / "test.ome.tiff"
 
-    stream = MemmapStream().create(str(output_path), dtype, dims)
+    stream = TifffileStream().create(str(output_path), dtype, dims, memmap=True)
     for frame in data_gen:
         stream.append(frame)
     stream.flush()
@@ -311,7 +317,7 @@ def test_memmap_file_extensions(tmp_path: Path) -> None:
 
     for ext in [".tif", ".tiff", ".ome.tif", ".ome.tiff"]:
         output_path = tmp_path / f"test{ext}"
-        stream = MemmapStream().create(str(output_path), dtype, dims)
+        stream = TifffileStream().create(str(output_path), dtype, dims, memmap=True)
         for frame in frames:
             stream.append(frame)
         stream.flush()
