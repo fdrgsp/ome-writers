@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import numpy as np
+import tifffile
 
 import ome_writers as omew
 
@@ -28,9 +29,9 @@ except ImportError as e:
 output = Path("example_pymmcore_plus").expanduser()
 
 # Choose backend: acquire-zarr, tensorstore, or tiff
-backend = "tensorstore"
+# backend = "tensorstore"
 # backend = "acquire-zarr"
-# backend = "tiff"
+backend = "tiff"
 
 # Create a MDASequence
 # NOTE: axis_order determines the order in which frames will be appended to the stream.
@@ -76,6 +77,17 @@ def _on_frame_ready(
 @core.mda.events.sequenceFinished.connect
 def _on_sequence_finished(sequence: useq.MDASequence) -> None:
     stream.flush()
+
+    # For tiff backend, print out the OME metadata from the written files
+    if backend == "tiff":
+        from rich import print
+
+        for file in path.parent.glob("*.ome.tiff"):
+            with tifffile.TiffFile(file) as tif:
+                ome_xml = tif.ome_metadata
+                print(f"\nOME metadata for file: {file.name}\n")
+                print(ome_xml)
+
     print("Data written successfully to", path)
 
 
