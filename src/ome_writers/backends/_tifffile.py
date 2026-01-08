@@ -8,12 +8,22 @@ from contextlib import suppress
 from itertools import count
 from pathlib import Path
 from queue import Queue
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from typing_extensions import Self
 
 from ome_writers._dimensions import dims_to_ome
 from ome_writers._stream_base import MultiPositionOMEStream
+
+
+class _WriterParams(TypedDict):
+    """Type for writer parameters dictionary."""
+
+    path: str
+    shape: tuple[int, ...]
+    dtype: Any  # np.dtype
+    ome_xml: str
+
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -127,7 +137,7 @@ class TifffileStream(MultiPositionOMEStream):
             )
 
             # Shared parameters for both writer types
-            writer_params = {
+            writer_params: _WriterParams = {
                 "path": fname,
                 "shape": shape_5d,
                 "dtype": dtype,
