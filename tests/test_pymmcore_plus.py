@@ -150,11 +150,22 @@ def test_pymmcore_plus_mda_tiff_metadata_update(tmp_path: Path) -> None:
         pytest.skip("tifffile or ome-types is not installed")
 
     # reopen the file and validate ome metadata
-    for f in list(tmp_path.glob("*.ome.tiff")):
+    # With multi-position, only position 0 has complete metadata with plates
+    # Other positions have BinaryOnly references
+    files = sorted(tmp_path.glob("*.ome.tiff"))
+    for idx, f in enumerate(files):
         with tifffile.TiffFile(f) as tif:
             ome_xml = tif.ome_metadata
             if ome_xml is not None:
                 # validate by attempting to parse
                 ome = from_xml(ome_xml)
-                # assert there is plate information
-                assert ome.plates
+
+                # Position 0 should have plate information
+                # Other positions should have BinaryOnly references
+                if idx == 0:
+                    assert ome.plates, "Position 0 should have plate information"
+                else:
+                    # Positions > 0 should have BinaryOnly reference
+                    assert ome.binary_only is not None, (
+                        f"Position {idx} should have BinaryOnly reference"
+                    )

@@ -207,27 +207,47 @@ def test_update_metadata_multifile(tmp_path: Path) -> None:
 
     base_path = Path(str(output_path).replace(".ome.tiff", ""))
 
-    for pos_idx in range(2):
-        pos_file = base_path.with_name(f"{base_path.name}_p{pos_idx:03d}.ome.tiff")
-        assert pos_file.exists()
+    # Position 0 (main file) should have ALL images
+    pos0_file = base_path.with_name(f"{base_path.name}_p000.ome.tiff")
+    assert pos0_file.exists()
 
-        with tifffile.TiffFile(str(pos_file)) as tif:
-            ome_xml = tif.ome_metadata
-            expected_name = f"Position {pos_idx} Updated"
-            expected_channel = f"Channel P{pos_idx}"
+    with tifffile.TiffFile(str(pos0_file)) as tif:
+        ome_xml = tif.ome_metadata
 
-            assert ome_xml is not None
-            assert expected_name in ome_xml
-            assert expected_channel in ome_xml
+        assert ome_xml is not None
+        # Should contain metadata for both positions
+        assert "Position 0 Updated" in ome_xml
+        assert "Position 1 Updated" in ome_xml
 
-            # Verify we can parse the OME-XML and it contains only this position's data
-            from ome_types import from_xml
+        # Verify we can parse the OME-XML
+        from ome_types import from_xml
 
-            ome_obj = from_xml(ome_xml)
-            assert len(ome_obj.images) == 1  # Each file should have only one image
-            assert ome_obj.images[0].name == expected_name
-            assert ome_obj.images[0].pixels.channels[0].name == expected_channel
-            assert ome_obj.images[0].id == f"Image:{pos_idx}"
+        ome_obj = from_xml(ome_xml)
+        # Position 0 should have ALL images (both positions)
+        assert len(ome_obj.images) == 2
+        assert ome_obj.images[0].name == "Position 0 Updated"
+        assert ome_obj.images[0].pixels.channels[0].name == "Channel P0"
+        assert ome_obj.images[0].id == "Image:0"
+        assert ome_obj.images[1].name == "Position 1 Updated"
+        assert ome_obj.images[1].pixels.channels[0].name == "Channel P1"
+        assert ome_obj.images[1].id == "Image:1"
+
+    # Position 1 should have BinaryOnly reference
+    pos1_file = base_path.with_name(f"{base_path.name}_p001.ome.tiff")
+    assert pos1_file.exists()
+
+    with tifffile.TiffFile(str(pos1_file)) as tif:
+        ome_xml = tif.ome_metadata
+        assert ome_xml is not None
+
+        from ome_types import from_xml
+
+        ome_obj = from_xml(ome_xml)
+        # Position 1 should have BinaryOnly reference
+        assert ome_obj.binary_only is not None
+        assert pos0_file.name in ome_obj.binary_only.metadata_file
+        # Should not have images in BinaryOnly file
+        assert len(ome_obj.images) == 0
 
 
 def test_update_metadata_error_conditions(tmp_path: Path) -> None:
@@ -349,33 +369,48 @@ def test_update_metadata_with_plates(tmp_path: Path) -> None:
     # Update metadata after flush
     stream.update_ome_metadata(updated_metadata)
 
-    # Verify that each position file contains only the relevant plate information
+    # Verify that each position file contains the correct metadata structure
     import tifffile
     from ome_types import from_xml
 
     base_path = Path(str(output_path).replace(".ome.tiff", ""))
 
-    for pos_idx in range(2):
-        pos_file = base_path.with_name(f"{base_path.name}_p{pos_idx:03d}.ome.tiff")
-        assert pos_file.exists()
+    # Position 0 (main file) should have ALL images and complete plate info
+    pos0_file = base_path.with_name(f"{base_path.name}_p000.ome.tiff")
+    assert pos0_file.exists()
 
-        with tifffile.TiffFile(str(pos_file)) as tif:
-            ome_xml = tif.ome_metadata
-            assert ome_xml is not None
-            ome_obj = from_xml(ome_xml)
+    with tifffile.TiffFile(str(pos0_file)) as tif:
+        ome_xml = tif.ome_metadata
+        assert ome_xml is not None
+        ome_obj = from_xml(ome_xml)
 
-            # Each file should have only one image and relevant plate info
-            assert len(ome_obj.images) == 1
-            assert ome_obj.images[0].id == f"Image:{pos_idx}"
+        # Position 0 should have ALL images
+        assert len(ome_obj.images) == 2
+        assert ome_obj.images[0].id == "Image:0"
+        assert ome_obj.images[0].name == "Well A01 Field 1"
+        assert ome_obj.images[1].id == "Image:1"
+        assert ome_obj.images[1].name == "Well A02 Field 1"
 
-            # Should have plate information, but only the relevant well
-            if ome_obj.plates:
-                assert len(ome_obj.plates) == 1
-                plate = ome_obj.plates[0]
-                assert len(plate.wells) == 1  # Only the relevant well
-                well = plate.wells[0]
-                assert well.well_samples[0].image_ref is not None
-                assert well.well_samples[0].image_ref.id == f"Image:{pos_idx}"
+        # Should have complete plate information
+        if ome_obj.plates:
+            assert len(ome_obj.plates) == 1
+            plate = ome_obj.plates[0]
+            assert len(plate.wells) == 2  # Both wells in main file
+
+    # Position 1 should have BinaryOnly reference
+    pos1_file = base_path.with_name(f"{base_path.name}_p001.ome.tiff")
+    assert pos1_file.exists()
+
+    with tifffile.TiffFile(str(pos1_file)) as tif:
+        ome_xml = tif.ome_metadata
+        assert ome_xml is not None
+        ome_obj = from_xml(ome_xml)
+
+        # Should have BinaryOnly element
+        assert ome_obj.binary_only is not None
+        assert pos0_file.name in ome_obj.binary_only.metadata_file
+        # Should not have images in BinaryOnly file
+        assert len(ome_obj.images) == 0
 
 
 def test_tifffile_stream_basic_functionality(tmp_path: Path) -> None:
