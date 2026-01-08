@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 
     from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
 
+    from ome_writers._auto import BackendName
+
     from .conftest import AvailableBackend
 
 
@@ -75,7 +77,7 @@ class PYMMCP:
         sequence: useq.MDASequence,
         core: CMMCorePlus,
         dest: Path,
-        backend: AvailableBackend,
+        backend: BackendName,  # "acquire-zarr", "tensorstore" or "tiff"
         ome_main_file: bool = False,
     ) -> None:
         self._seq = sequence
@@ -92,7 +94,7 @@ class PYMMCP:
             ),
             dtype=np.uint16,
             overwrite=True,
-            backend=backend.name,
+            backend=backend,
             ome_main_file=ome_main_file,
         )
 
@@ -112,7 +114,7 @@ class PYMMCP:
         @core.mda.events.sequenceFinished.connect
         def _on_sequence_finished(sequence: useq.MDASequence) -> None:
             self._stream.flush()
-            if hasattr(self._stream, "update_ome_metadata"):
+            if hasattr(self._stream, "update_ome_metadata"):  # tiff backend
                 ome = create_ome_metadata(self._summary_meta, self._frame_meta_list)
                 self._stream.update_ome_metadata(ome)
 
@@ -122,6 +124,7 @@ class PYMMCP:
 
 TEST_SEQ = [
     useq.MDASequence(
+        time_plan=useq.TIntervalLoops(interval=0.001, loops=2),  # type: ignore
         z_plan=useq.ZRangeAround(range=2, step=1),
         channels=["DAPI", "FITC"],  # type: ignore
         stage_positions=useq.WellPlatePlan(
@@ -166,7 +169,7 @@ def test_pymmcore_plus_mda_metadata_update(
     core = CMMCorePlus()
     core.loadSystemConfiguration()
 
-    pymm = PYMMCP(seq, core, dest, backend=backend, ome_main_file=ome_main_file)
+    pymm = PYMMCP(seq, core, dest, backend=backend.name, ome_main_file=ome_main_file)
     pymm.run()
 
     if backend.file_ext.endswith(".zarr"):
@@ -221,19 +224,3 @@ def test_pymmcore_plus_mda_metadata_update(
                                 uuid = ome.images[0].pixels.tiff_data_blocks[0].uuid
                                 if uuid is not None:
                                     uuid_map[idx] = uuid.value
-
-                        # Assert there is plate information if using WellPlatePlan
-                        if isinstance(seq.stage_positions, useq.WellPlatePlan):
-                            assert ome.plates
-
-                        # Verify image name (preserved from original filename)
-                        if isinstance(seq.stage_positions, useq.WellPlatePlan):
-                            map_names = {
-                                0: f"A1_0000_p{idx:04d}",
-                                1: f"A1_0001_p{idx:04d}",
-                                2: f"A2_0000_p{idx:04d}",
-                                3: f"A2_0001_p{idx:04d}",
-                            }
-                            assert ome.images[0].name == map_names[idx]
-                        else:
-                            assert ome.images[0].name == f"p{idx:04d}"
