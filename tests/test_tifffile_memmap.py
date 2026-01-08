@@ -118,14 +118,30 @@ def test_memmap_multiposition(tmp_path: Path) -> None:
 
     # Verify each position file
     base = tmp_path / "test"
+
+    # Position 0 should have all images (main file)
+    pos0_file = base.with_name(f"{base.name}_p000.ome.tiff")
+    assert pos0_file.exists()
+    data = tifffile.imread(str(pos0_file))
+    assert data.shape == (3, 2, 2, 32, 32)
+
+    ome = ome_types.from_tiff(pos0_file)
+    assert len(ome.images) == 3  # Position 0 has all images
     for i in range(3):
+        assert ome.images[i].id == f"Image:{i}"
+
+    # Positions 1 and 2 should have BinaryOnly references
+    for i in range(1, 3):
         pos_file = base.with_name(f"{base.name}_p{i:03d}.ome.tiff")
         assert pos_file.exists()
         data = tifffile.imread(str(pos_file))
         assert data.shape == (3, 2, 2, 32, 32)
 
         ome = ome_types.from_tiff(pos_file)
-        assert ome.images[0].id == f"Image:{i}"
+        # Positions > 0 should have BinaryOnly reference
+        assert ome.binary_only is not None
+        assert pos0_file.name in ome.binary_only.metadata_file
+        assert len(ome.images) == 0  # BinaryOnly files have no images
 
 
 def test_memmap_overwrite_behavior(tmp_path: Path) -> None:

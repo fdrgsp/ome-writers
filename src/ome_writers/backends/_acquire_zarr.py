@@ -7,7 +7,7 @@ import json
 import shutil
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
@@ -49,6 +49,7 @@ class AcquireZarrStream(MultiPositionOMEStream):
         dimensions: Sequence[Dimension],
         *,
         overwrite: bool = False,
+        **kwargs: Any,
     ) -> Self:
         # Initialize dimensions from MultiPositionOMEStream
         # NOTE: Data will be stored in acquisition order.

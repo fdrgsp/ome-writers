@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 from abc import abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from typing_extensions import Self
 
@@ -40,6 +40,7 @@ class OMEStream(abc.ABC):
         dimensions: Sequence[Dimension],
         *,
         overwrite: bool = False,
+        **kwargs: Any,
     ) -> Self:
         """Create a new stream for path, dtype, and dimensions.
 
@@ -55,6 +56,8 @@ class OMEStream(abc.ABC):
             (i.e., the order in which frames will be appended to the stream).
         overwrite : bool, optional
             Whether to overwrite existing files or directories. Default is False.
+        **kwargs : Any
+            Additional backend-specific keyword arguments.
 
         Returns
         -------
