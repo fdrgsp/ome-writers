@@ -407,6 +407,13 @@ BACKENDS: list[BackendMetadata] = [
         format="ome-tiff",
         is_available=_is_tifffile_available,
     ),
+    BackendMetadata(
+        name="scratch",
+        module_path="ome_writers._backends._scratch",
+        class_name="ScratchBackend",
+        format="scratch",
+        is_available=lambda: True,
+    ),
 ]
 VALID_BACKEND_NAMES: list[str] = [b.name for b in BACKENDS] + ["auto"]
 AVAILABLE_BACKENDS: dict[str, BackendMetadata] = {
@@ -440,7 +447,8 @@ def create_stream(settings: AcquisitionSettings) -> OMEStream:
     Raises
     ------
     ValueError
-        If settings are invalid or backend is incompatible.
+        If settings are invalid (missing dimensions or dtype) or backend is
+        incompatible.
     NotImplementedError
         If requesting unsupported features (e.g., plate mode).
 
@@ -456,10 +464,15 @@ def create_stream(settings: AcquisitionSettings) -> OMEStream:
     ...     for i in range(20):  # 10 timepoints x 2 channels
     ...         stream.append(np.zeros((512, 512), dtype=np.uint16))
     """
+    settings.validate_stream_ready()  # raises ValueError if settings are incomplete
+
     # rather than making AcquisitionSettings a frozen model,
     # copy the settings once here.  The point is that no modifications made
     # to the settings after this call will be reflected in the stream.
     settings = settings.model_copy(deep=True)
+
+    if settings.format.name != "scratch" and not settings.root_path:
+        raise ValueError(f"root_path is required for {settings.format.name} format.")
 
     backend: ArrayBackend = _create_backend(settings)
     router = FrameRouter(settings)
