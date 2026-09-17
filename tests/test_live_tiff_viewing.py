@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -130,6 +131,46 @@ def test_multiposition_tiffs_are_created_lazily(tmp_path: Path) -> None:
 
     stream.close()
     assert [path.name for path in output.glob("*.ome.tiff")] == ["lazy_p000.ome.tiff"]
+
+
+def test_lazy_tiff_open_does_not_block_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slow filesystem initialization stays off the acquisition thread."""
+    from ome_writers._backends import _tifffile
+
+    entered_open = threading.Event()
+    release_open = threading.Event()
+    append_finished = threading.Event()
+    original_writer = _tifffile.tifffile.TiffWriter
+
+    def slow_writer(*args: object, **kwargs: object) -> object:
+        entered_open.set()
+        release_open.wait(timeout=5)
+        return original_writer(*args, **kwargs)
+
+    monkeypatch.setattr(_tifffile.tifffile, "TiffWriter", slow_writer)
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "nonblocking.ome.tiff",
+        dimensions=[Dimension(name="y", count=16), Dimension(name="x", count=16)],
+        dtype="uint16",
+        format="tifffile",
+    )
+    stream = create_stream(settings)
+
+    def append() -> None:
+        stream.append(np.ones((16, 16), dtype=np.uint16))
+        append_finished.set()
+
+    caller = threading.Thread(target=append)
+    caller.start()
+    try:
+        assert entered_open.wait(timeout=1)
+        assert append_finished.wait(timeout=1)
+    finally:
+        release_open.set()
+        caller.join(timeout=5)
+        stream.close()
 
 
 def test_finalized_tiff_uses_finalized_array(tmp_path: Path) -> None:

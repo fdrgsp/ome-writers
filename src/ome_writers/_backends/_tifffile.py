@@ -76,7 +76,7 @@ class PositionManager:
         """Start this position's writer on demand and enqueue a frame."""
         if self.thread is None:  # pragma: no cover
             raise RuntimeError(f"Position {self.file_path!r} is not a TIFF file.")
-        self.thread.enqueue(frame, self.metadata_mirror.model)
+        self.thread.enqueue(frame)
 
     def finalize(self, index_dims: tuple[Dimension, ...] | None) -> None:
         """Wait for thread completion and update metadata with actual frames written.
@@ -206,6 +206,7 @@ class TiffBackend(ArrayBackend):
                     file_path=fname,
                     shape=shape,
                     dtype=self._dtype,
+                    ome_xml=meta_mirror.model.to_xml(),
                     has_unbounded=has_unbounded,
                     compression=compression,
                 )
@@ -525,6 +526,7 @@ class WriterThread(threading.Thread):
         file_path: str,
         shape: tuple[int, ...],
         dtype: str,
+        ome_xml: str = "",
         pixelsize: float = 1.0,
         has_unbounded: bool = False,
         compression: tifffile.COMPRESSION | None = None,
@@ -535,7 +537,9 @@ class WriterThread(threading.Thread):
         self._shape = shape
         self._dtype = dtype
         self._image_queue: Queue[np.ndarray | None] = Queue()
-        self._ome_xml_bytes = b""
+        # Passing bytes preserves non-ASCII OME units such as 'µ'.  Serialize
+        # during store preparation so metadata work never delays acquisition.
+        self._ome_xml_bytes = ome_xml.encode("utf-8")
         self._res = 1 / pixelsize
         self._has_unbounded = has_unbounded
         self._compression = compression
@@ -550,9 +554,9 @@ class WriterThread(threading.Thread):
         """Whether the TIFF file has been opened and the writer thread started."""
         return self._writer_started
 
-    def enqueue(self, frame: np.ndarray, metadata: ome.OME) -> None:
-        """Open the TIFF lazily, start the thread, and enqueue ``frame``."""
-        self._start_writing(metadata)
+    def enqueue(self, frame: np.ndarray) -> None:
+        """Start this position's writer thread and enqueue ``frame``."""
+        self._start_writing()
         self._image_queue.put(frame)
 
     def stop(self) -> None:
@@ -560,47 +564,43 @@ class WriterThread(threading.Thread):
         if self._writer_started:
             self._image_queue.put(None)
 
-    def _start_writing(self, metadata: ome.OME) -> None:
+    def _start_writing(self) -> None:
         if self._writer_started:
             return
         with self._start_lock:
             if self._writer_started:
                 return
-            writer = tifffile.TiffWriter(
-                self._file_path, bigtiff=True, ome=False, shaped=False
-            )
-            self._writer = writer
-            # Passing bytes preserves non-ASCII OME units such as 'µ'.
-            self._ome_xml_bytes = metadata.to_xml().encode("utf-8")
             try:
                 super().start()
             except Exception:
-                writer.close()
-                self._writer = None
                 raise
             self._writer_started = True
 
     def run(self) -> None:
         """Write frames from queue to TIFF file sequentially."""
-        writer = self._writer
-        if writer is None:  # pragma: no cover
-            raise RuntimeError("Writer thread started before its TIFF was opened.")
-        # Wait for first frame - if None, close writer and return
-        first_frame = self._image_queue.get()
-        if first_frame is None:
-            writer.close()
-            return
-
-        def _queue_iterator() -> Iterator[np.ndarray]:
-            """Yield first frame, then frames from queue until None."""
-            yield first_frame
-            while True:
-                frame = self._image_queue.get()
-                if frame is None:
-                    break
-                yield frame
-
+        writer: tifffile.TiffWriter | None = None
         try:
+            # File creation may be slow on network storage.  It intentionally
+            # happens here, after append() has queued the first frame and returned
+            # to the acquisition loop.
+            writer = tifffile.TiffWriter(
+                self._file_path, bigtiff=True, ome=False, shaped=False
+            )
+            self._writer = writer
+
+            first_frame = self._image_queue.get()
+            if first_frame is None:
+                return
+
+            def _queue_iterator() -> Iterator[np.ndarray]:
+                """Yield first frame, then frames from queue until None."""
+                yield first_frame
+                while True:
+                    frame = self._image_queue.get()
+                    if frame is None:
+                        break
+                    yield frame
+
             # Write frames individually for both bounded and unbounded dimensions.
             # This approach:
             # - Doesn't promise a frame count upfront (no shape parameter)
@@ -649,8 +649,9 @@ class WriterThread(threading.Thread):
                 stacklevel=2,
             )
         finally:
-            with suppress(Exception):
-                writer.close()
+            if writer is not None:
+                with suppress(Exception):
+                    writer.close()
 
 
 _thread_counter = count()
