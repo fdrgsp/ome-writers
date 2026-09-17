@@ -87,11 +87,11 @@ def wait_for_frames(
         if isinstance(backend, TiffBackend):
             start = time.time()
             while time.time() - start < timeout:
-                thread = backend._position_managers[position_idx].thread
-                if thread is None:
+                state = backend._position_managers[position_idx].write_state
+                if state is None:
                     break
-                with thread.state_lock:
-                    written = thread.frames_written
+                with state.state_lock:
+                    written = state.frames_written
                 if expected_count is None or written >= expected_count:
                     if written > 0:
                         break

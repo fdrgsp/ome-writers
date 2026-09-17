@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     import tifffile
 
-    from ome_writers._backends._tifffile import WriterThread
+    from ome_writers._backends._tifffile import TiffWriteState
     from ome_writers._schema import Dimension
 
 
@@ -124,7 +124,7 @@ class LiveTiffArray(TiffArrayBase):
     `contiguous=True` (uncompressed) TIFF writes.
 
     The `shape` property is dynamic: for unbounded first dimensions it
-    derives the outer extent from `WriterThread.frames_written`, eliminating
+    derives the outer extent from `TiffWriteState.frames_written`, eliminating
     the previous hard-coded magic number (1000).
     """
 
@@ -136,17 +136,17 @@ class LiveTiffArray(TiffArrayBase):
         "_inner_product",
         "_n_index",
         "_path",
-        "_thread",
+        "_write_state",
     )
 
     def __init__(
         self,
-        writer_thread: WriterThread,
+        write_state: TiffWriteState,
         file_path: str,
         storage_dims: tuple[Dimension, ...],
         dtype: str,
     ) -> None:
-        self._thread = writer_thread
+        self._write_state = write_state
         self._path = file_path
         self._index_counts = tuple(d.count for d in storage_dims[:-2])
         self._frame_shape = tuple(d.count or 1 for d in storage_dims[-2:])
@@ -163,17 +163,17 @@ class LiveTiffArray(TiffArrayBase):
         """Full array shape, dynamically derived for unbounded dims."""
         counts = list(self._index_counts)
         if counts and counts[0] is None:
-            with self._thread.state_lock:
-                nf = self._thread.frames_written
+            with self._write_state.state_lock:
+                nf = self._write_state.frames_written
             # Ceiling division: how many complete outer slices?
             counts[0] = -(-nf // self._inner_product) if nf > 0 else 0
         return tuple(c if c is not None else 1 for c in counts) + self._frame_shape
 
     def _read_frame(self, flat_idx: int) -> np.ndarray:
         """Read a single frame by its flat index."""
-        with self._thread.state_lock:
-            nf = self._thread.frames_written
-            data_offset = self._thread.data_offset
+        with self._write_state.state_lock:
+            nf = self._write_state.frames_written
+            data_offset = self._write_state.data_offset
 
         if data_offset is None or flat_idx >= nf:
             return np.zeros(self._frame_shape, dtype=self._dtype_obj)

@@ -11,7 +11,7 @@ import pytest
 from ome_writers import AcquisitionSettings, Dimension, create_stream
 
 try:
-    from ome_writers._backends import _tifffile  # noqa: F401
+    from ome_writers._backends import _tifffile
     from ome_writers._backends._tiff_array import FinalizedTiffArray, LiveTiffArray
 except ImportError:
     pytest.skip(
@@ -51,7 +51,7 @@ def test_live_tiff_viewing_basic(tmp_path: Path) -> None:
             frame = np.full((32, 32), i, dtype=np.uint16)
             stream.append(frame)
 
-        # Wait for frames to be written by WriterThread
+        # Wait for frames to be written by the background writer pool
         wait_for_frames(stream._backend, expected_count=10)
         # Wait for async coord callbacks to update the view's shape
         wait_for_pending_callbacks(stream)
@@ -103,11 +103,11 @@ def test_live_viewing_returns_zeros_for_unwritten(tmp_path: Path) -> None:
 
 
 def test_multiposition_tiffs_are_created_lazily(tmp_path: Path) -> None:
-    """Only positions that receive a frame create a TIFF file and writer thread."""
+    """Only positions that receive a frame create a TIFF, with bounded threads."""
     settings = AcquisitionSettings(
         root_path=tmp_path / "lazy.ome.tiff",
         dimensions=[
-            Dimension(name="p", count=3, type="position"),
+            Dimension(name="p", count=100, type="position"),
             Dimension(name="y", count=16, type="space"),
             Dimension(name="x", count=16, type="space"),
         ],
@@ -117,6 +117,7 @@ def test_multiposition_tiffs_are_created_lazily(tmp_path: Path) -> None:
 
     stream = create_stream(settings)
     output = tmp_path / "lazy"
+    assert len(stream._backend._writer_threads) == 4
     assert not list(output.glob("*.ome.tiff"))
 
     view = stream.view()
@@ -131,6 +132,59 @@ def test_multiposition_tiffs_are_created_lazily(tmp_path: Path) -> None:
 
     stream.close()
     assert [path.name for path in output.glob("*.ome.tiff")] == ["lazy_p000.ome.tiff"]
+
+
+@pytest.mark.parametrize("order", ["pt", "tp"])
+def test_writer_pool_preserves_multiposition_order(tmp_path: Path, order: str) -> None:
+    """The bounded pool preserves per-position order for burst and round-robin."""
+    position_count = 6
+    time_count = 4
+    index_dims = {
+        "p": Dimension(name="p", count=position_count, type="position"),
+        "t": Dimension(name="t", count=time_count, type="time"),
+    }
+    settings = AcquisitionSettings(
+        root_path=tmp_path / f"order_{order}.ome.tiff",
+        dimensions=[
+            *(index_dims[name] for name in order),
+            Dimension(name="y", count=4, type="space"),
+            Dimension(name="x", count=4, type="space"),
+        ],
+        dtype="uint16",
+        format="tifffile",
+    )
+    stream = create_stream(settings)
+    backend = stream._backend
+    first_group = time_count if order == "pt" else position_count
+
+    for value in range(first_group):
+        stream.append(np.full((4, 4), value, dtype=np.uint16))
+
+    if order == "pt":
+        wait_for_frames(backend, position_idx=0, expected_count=time_count)
+        state = backend._position_managers[0].write_state
+        assert state is not None and state.complete
+        assert all(
+            state.file_path not in worker._writers for worker in backend._writer_threads
+        )
+    else:
+        for position_idx in range(position_count):
+            wait_for_frames(backend, position_idx=position_idx, expected_count=1)
+        assert sum(len(worker._writers) for worker in backend._writer_threads) == 6
+
+    for value in range(first_group, position_count * time_count):
+        stream.append(np.full((4, 4), value, dtype=np.uint16))
+    stream.close()
+
+    assert all(not worker.is_alive() for worker in backend._writer_threads)
+    output = tmp_path / f"order_{order}"
+    for position_idx, path in enumerate(sorted(output.glob("*.ome.tiff"))):
+        data = _tifffile.tifffile.imread(path)
+        if order == "pt":
+            expected = position_idx * time_count + np.arange(time_count)
+        else:
+            expected = position_idx + position_count * np.arange(time_count)
+        assert np.array_equal(data[:, 0, 0], expected)
 
 
 def test_lazy_tiff_open_does_not_block_append(
