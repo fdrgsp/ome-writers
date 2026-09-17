@@ -101,6 +101,37 @@ def test_live_viewing_returns_zeros_for_unwritten(tmp_path: Path) -> None:
         assert np.all(view[9] == 0)
 
 
+def test_multiposition_tiffs_are_created_lazily(tmp_path: Path) -> None:
+    """Only positions that receive a frame create a TIFF file and writer thread."""
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "lazy.ome.tiff",
+        dimensions=[
+            Dimension(name="p", count=3, type="position"),
+            Dimension(name="y", count=16, type="space"),
+            Dimension(name="x", count=16, type="space"),
+        ],
+        dtype="uint16",
+        format="tifffile",
+    )
+
+    stream = create_stream(settings)
+    output = tmp_path / "lazy"
+    assert not list(output.glob("*.ome.tiff"))
+
+    view = stream.view()
+    assert np.all(view[1] == 0)
+    assert not list(output.glob("*.ome.tiff"))
+
+    stream.append(np.ones((16, 16), dtype=np.uint16))
+    wait_for_frames(stream._backend, position_idx=0, expected_count=1)
+    assert [path.name for path in output.glob("*.ome.tiff")] == ["lazy_p000.ome.tiff"]
+    assert np.all(view[0] == 1)
+    assert np.all(view[1] == 0)
+
+    stream.close()
+    assert [path.name for path in output.glob("*.ome.tiff")] == ["lazy_p000.ome.tiff"]
+
+
 def test_finalized_tiff_uses_finalized_array(tmp_path: Path) -> None:
     """Test that finalized TIFF files use FinalizedTiffArray."""
     settings = AcquisitionSettings(

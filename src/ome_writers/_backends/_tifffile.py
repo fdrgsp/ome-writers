@@ -52,9 +52,7 @@ class PositionManager:
 
     file_path: str
     thread: WriterThread | None
-    queue: Queue[np.ndarray | None]
     metadata_mirror: OmeXMLMirror
-    writer: tifffile.TiffWriter | None
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -71,8 +69,14 @@ class PositionManager:
 
     def signal_stop(self) -> None:
         """Signal the writer thread to stop by sending None sentinel."""
-        if self.queue is not None:
-            self.queue.put(None)
+        if self.thread is not None:
+            self.thread.stop()
+
+    def enqueue(self, frame: np.ndarray) -> None:
+        """Start this position's writer on demand and enqueue a frame."""
+        if self.thread is None:  # pragma: no cover
+            raise RuntimeError(f"Position {self.file_path!r} is not a TIFF file.")
+        self.thread.enqueue(frame, self.metadata_mirror.model)
 
     def finalize(self, index_dims: tuple[Dimension, ...] | None) -> None:
         """Wait for thread completion and update metadata with actual frames written.
@@ -84,13 +88,18 @@ class PositionManager:
             (usually just T, C, Z)
         """
         # Wait for thread to finish
-        if self.thread:
+        if self.thread and self.thread.started:
             self.thread.join(timeout=5)
 
         # Update metadata based on actual frames written
         if self.thread is None:
             # No thread means no TIFF file (e.g., companion OME-XML only)
             self.metadata_mirror.flush(force=True)
+            return
+
+        # No frames were routed to this position.  Leave it absent rather than
+        # manufacturing an empty TIFF that contains no readable IFDs.
+        if not self.thread.started:
             return
 
         # Update dimension sizes and plane count based on actual frames written
@@ -186,32 +195,24 @@ class TiffBackend(ArrayBackend):
         # mapping of filepath -> OmeXMLMirror
         metas = prepare_metadata(settings)
 
-        # Create writer thread for each position
+        # Describe each position's writer, but do not open its file or start its
+        # thread until the first frame is routed there.  Large tiled acquisitions
+        # can contain hundreds of positions; eagerly opening all of them creates
+        # hundreds of empty files and makes stream setup scale with position count.
         for fname, meta_mirror in metas.items():
-            thread = q = writer = None
+            thread = None
             if meta_mirror.is_tiff:
-                # Create TiffWriter immediately - file exists with valid header
-                writer = tifffile.TiffWriter(
-                    fname, bigtiff=True, ome=False, shaped=False
-                )
-
-                q = Queue()
                 thread = WriterThread(
-                    writer=writer,
+                    file_path=fname,
                     shape=shape,
                     dtype=self._dtype,
-                    image_queue=q,
-                    ome_xml=meta_mirror.model.to_xml(),
                     has_unbounded=has_unbounded,
                     compression=compression,
                 )
-                thread.start()
             self._position_managers[meta_mirror.pos_idx] = PositionManager(
                 file_path=fname,
                 thread=thread,
-                queue=q,
                 metadata_mirror=meta_mirror,
-                writer=writer,
             )
 
     def write(
@@ -232,7 +233,7 @@ class TiffBackend(ArrayBackend):
             raise RuntimeError("Backend not prepared. Call prepare() first.")
 
         manager = self._position_managers[position_index]
-        manager.queue.put(frame)
+        manager.enqueue(frame)
 
         # Accumulate frame metadata with storage index
         if frame_metadata is not None:
@@ -257,8 +258,7 @@ class TiffBackend(ArrayBackend):
         # Write placeholder for each skipped frame
         for pos_idx, _storage_idx in indices:
             manager = self._position_managers[pos_idx]
-            # Send to WriterThread queue (same path as regular writes)
-            manager.queue.put(placeholder)
+            manager.enqueue(placeholder)
 
     def _append_frame_metadata(
         self,
@@ -522,40 +522,73 @@ class WriterThread(threading.Thread):
 
     def __init__(
         self,
-        writer: tifffile.TiffWriter,
+        file_path: str,
         shape: tuple[int, ...],
         dtype: str,
-        image_queue: Queue[np.ndarray | None],
-        ome_xml: str = "",
         pixelsize: float = 1.0,
         has_unbounded: bool = False,
         compression: tifffile.COMPRESSION | None = None,
     ) -> None:
         super().__init__(daemon=True, name=f"TiffWriterThread-{next(_thread_counter)}")
-        self._writer = writer
+        self._file_path = file_path
+        self._writer: tifffile.TiffWriter | None = None
         self._shape = shape
         self._dtype = dtype
-        self._image_queue = image_queue
-        # Encode to UTF-8 bytes
-        # critical: if you pass a str to tifffile.tiffcomment, it requires ASCII
-        # which limits the ability to properly express characters like 'µ' in
-        # physical units.  The OME-TIFF spec, however, explicitly requests UTF-8.
-        # passing in bytes directly circumvents tifffile conversion and preserves
-        # encoding.
-        self._ome_xml_bytes = ome_xml.encode("utf-8")
+        self._image_queue: Queue[np.ndarray | None] = Queue()
+        self._ome_xml_bytes = b""
         self._res = 1 / pixelsize
         self._has_unbounded = has_unbounded
         self._compression = compression
+        self._start_lock = threading.Lock()
+        self._writer_started = False
         self.frames_written = 0  # Track actual frames written for unbounded dims
         self.state_lock = threading.Lock()  # Synchronize with readers
         self.data_offset: int | None = None  # Byte offset where frame data starts
 
+    @property
+    def started(self) -> bool:
+        """Whether the TIFF file has been opened and the writer thread started."""
+        return self._writer_started
+
+    def enqueue(self, frame: np.ndarray, metadata: ome.OME) -> None:
+        """Open the TIFF lazily, start the thread, and enqueue ``frame``."""
+        self._start_writing(metadata)
+        self._image_queue.put(frame)
+
+    def stop(self) -> None:
+        """Stop the writer if this position received at least one frame."""
+        if self._writer_started:
+            self._image_queue.put(None)
+
+    def _start_writing(self, metadata: ome.OME) -> None:
+        if self._writer_started:
+            return
+        with self._start_lock:
+            if self._writer_started:
+                return
+            writer = tifffile.TiffWriter(
+                self._file_path, bigtiff=True, ome=False, shaped=False
+            )
+            self._writer = writer
+            # Passing bytes preserves non-ASCII OME units such as 'µ'.
+            self._ome_xml_bytes = metadata.to_xml().encode("utf-8")
+            try:
+                super().start()
+            except Exception:
+                writer.close()
+                self._writer = None
+                raise
+            self._writer_started = True
+
     def run(self) -> None:
         """Write frames from queue to TIFF file sequentially."""
+        writer = self._writer
+        if writer is None:  # pragma: no cover
+            raise RuntimeError("Writer thread started before its TIFF was opened.")
         # Wait for first frame - if None, close writer and return
         first_frame = self._image_queue.get()
         if first_frame is None:
-            self._writer.close()
+            writer.close()
             return
 
         def _queue_iterator() -> Iterator[np.ndarray]:
@@ -578,7 +611,7 @@ class WriterThread(threading.Thread):
             use_contiguous = self._compression is None
             for i, frame in enumerate(_queue_iterator()):
                 # Write frame without holding lock - only this thread writes
-                self._writer.write(
+                writer.write(
                     frame,
                     contiguous=use_contiguous,
                     dtype=self._dtype,
@@ -595,7 +628,7 @@ class WriterThread(threading.Thread):
                     if i == 0 and self.data_offset is None:
                         try:
                             # ! private attribute access - relies on tifffile internals
-                            self.data_offset = self._writer._dataoffset
+                            self.data_offset = writer._dataoffset
                         except AttributeError:  # pragma: no cover
                             raise RuntimeError(
                                 "tifffile.TiffWriter has no _dataoffset attribute. "
@@ -617,7 +650,7 @@ class WriterThread(threading.Thread):
             )
         finally:
             with suppress(Exception):
-                self._writer.close()
+                writer.close()
 
 
 _thread_counter = count()
