@@ -48,7 +48,9 @@ estimated array size exceeds this limit:
 
 - **With `spill_to_disk=True`** (default): data is automatically written to a
   temporary directory using memory-mapped files. A warning is emitted with the
-  temporary path, and the directory is automatically cleaned up on process exit.
+  temporary path. The directory is created inside `spill_dir` if set (otherwise
+  the system temporary directory), and is deleted as soon as the backend is
+  garbage collected (or on process exit, whichever comes first).
 - **With `spill_to_disk=False`**: a `MemoryError` is raised.
 
 You can also set `root_path` explicitly to always use disk-backed storage,

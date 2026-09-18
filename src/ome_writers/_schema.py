@@ -813,6 +813,12 @@ class ScratchFormat(_BaseModel):
         description="Whether to spill to disk when memory limit is exceeded, "
         "and no root_path is set",
     )
+    spill_dir: str | None = Field(
+        default=None,
+        description="Parent directory for the temporary directory used when "
+        "spilling to disk (created if missing). If None, the system temporary "
+        "directory is used.",
+    )
 
     def get_output_path(self, root_path: str, *, num_positions: int = 1) -> str:
         """Compute output path based on `root_path` (identity for scratch format)."""

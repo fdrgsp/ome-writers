@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import atexit
 import json
 import os
 import shutil
 import tempfile
 import warnings
+import weakref
 from contextlib import suppress
 from copy import deepcopy
 from pathlib import Path
@@ -29,6 +29,12 @@ if TYPE_CHECKING:
     from ome_writers._schema import AcquisitionSettings
 
 MANIFEST: Final = "manifest.json"
+
+
+def _remove_spill_dir(arrays: list, path: Path) -> None:
+    """Release the memmaps held in `arrays`, then delete the spill `path`."""
+    arrays.clear()
+    shutil.rmtree(path, ignore_errors=True)
 
 
 class ScratchBackend(ArrayBackend):
@@ -99,8 +105,19 @@ class ScratchBackend(ArrayBackend):
 
             if total_bytes > fmt.max_memory_bytes:
                 if fmt.spill_to_disk:
-                    self._root_path = Path(tempfile.mkdtemp(prefix="ome_scratch_"))
-                    atexit.register(shutil.rmtree, self._root_path, True)
+                    if fmt.spill_dir is not None:
+                        Path(fmt.spill_dir).mkdir(parents=True, exist_ok=True)
+                    self._root_path = Path(
+                        tempfile.mkdtemp(prefix="ome_scratch_", dir=fmt.spill_dir)
+                    )
+                    # Delete the spill directory as soon as this backend is
+                    # garbage collected (or at exit, whichever comes first).
+                    # The finalizer holds the arrays list (never rebound) rather
+                    # than self, so it can release the memmaps before deleting
+                    # their files (required on Windows).
+                    weakref.finalize(
+                        self, _remove_spill_dir, self._arrays, self._root_path
+                    )
                     warnings.warn(
                         f"Scratch arrays would require "
                         f"~{total_bytes / 1e9:.1f} GB in memory. "
@@ -180,9 +197,10 @@ class ScratchBackend(ArrayBackend):
             self._arrays.clear()
 
     def get_arrays(self) -> Sequence[ArrayLike]:
-        if self._finalized and not self._arrays and self._root_path:
-            return self._reopen_arrays()
-        return [_ScratchArrayView(self, i) for i in range(len(self._arrays))]
+        # Always proxies (also after finalize, when they read from re-opened
+        # memmaps and return copies), so no caller keeps a file mapped.
+        n_positions = len(self._logical_shapes)
+        return [_ScratchArrayView(self, i) for i in range(n_positions)]
 
     def _reopen_arrays(self) -> Sequence[ArrayLike]:
         """Re-open memmap files read-only from disk after finalization."""
@@ -313,7 +331,13 @@ class _ScratchArrayView:
     def __getitem__(self, key: Any) -> Any:
         if not self._backend._arrays:
             # After finalize, arrays are cleared; delegate to re-opened view.
-            return self._backend._reopen_arrays()[self._pos_idx][key]
+            # Copy so callers never keep the file mapped, which would block
+            # deleting the spill directory on Windows.
+            result = self._backend._reopen_arrays()[self._pos_idx][key]
+            if isinstance(result, np.ndarray):
+                result = np.array(result)
+                result.flags.writeable = False
+            return result
         arr = self._backend._arrays[self._pos_idx]
         if self._backend._unbounded_axes:
             # Clip to logical shape so over-allocated backing storage is hidden

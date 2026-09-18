@@ -395,3 +395,33 @@ def test_storage_order_scratch_uses_acquisition_order() -> None:
     )
     # For memory, storage order should match acquisition order (c, t)
     assert [d.name for d in settings.storage_index_dimensions] == ["c", "t"]
+
+
+def test_spill_dir_and_cleanup_on_release(tmp_path: Path) -> None:
+    """Spilled data lives in `spill_dir` and is deleted once released."""
+    import gc
+
+    spill_dir = tmp_path / "spill"
+    settings = _make_settings(
+        format={"name": "scratch", "max_memory_bytes": 1, "spill_dir": str(spill_dir)}
+    )
+    with pytest.warns(UserWarning, match="disk-backed"):
+        stream = create_stream(settings)
+    frame = np.ones((8, 8), dtype="uint16")
+    for _ in range(6):
+        stream.append(frame)
+    stream.close()
+
+    (spill_root,) = spill_dir.iterdir()
+    assert spill_root.name.startswith("ome_scratch_")
+
+    # reads after close are copies, not views onto the mapped file
+    view = stream.view()
+    result = view[0, 0]
+    np.testing.assert_array_equal(result, frame)
+    assert not isinstance(result, np.memmap)
+    assert result.base is None
+
+    del stream, view, result
+    gc.collect()
+    assert not spill_root.exists()
