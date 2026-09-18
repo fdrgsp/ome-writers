@@ -9,7 +9,7 @@ import numpy.typing as npt
 from ome_writers._schema import Dimension, dims_from_standard_axes
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping
+    from collections.abc import Iterator, Mapping, Sequence
 
 
 def fake_data_for_sizes(
@@ -64,3 +64,27 @@ def fake_data_for_sizes(
                 i += 1
 
     return _build_plane_generator(), dims, dtype
+
+
+def spatial_role_indices(dims: Sequence[Dimension]) -> dict[str, int]:
+    """Return a `{"x"|"y"|"z": dim_index}` map for spatial roles in `dims`.
+
+    ome-writers and NGFF don't mandate canonical axis names, but some metadata
+    fields (OME `StageLabel`, per-position NGFF translations) need to know which
+    dim is X/Y/Z.  Dims named `x`/`y`/`z` (case-insensitive) match by name.  Failing
+    that, the last two dims are taken as (Y, X): `AcquisitionSettings` guarantees
+    they are the spatial frame dims, and (row, col) is the universal convention.
+    Z has no such invariant, so it is only ever matched by name.
+    """
+    result: dict[str, int] = {}
+    for i, d in enumerate(dims):
+        lower = d.name.lower()
+        if lower in ("x", "y", "z") and lower not in result:
+            result[lower] = i
+    n = len(dims)
+    for axis, i in (("x", n - 1), ("y", n - 2)):
+        if axis in result or i < 0 or i in result.values():
+            continue
+        if dims[i].type == "space":
+            result[axis] = i
+    return result

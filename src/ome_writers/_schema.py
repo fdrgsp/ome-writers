@@ -231,6 +231,17 @@ class Position(_BaseModel):
     position is a member of a larger coordinate system (e.g. well plate or grid).  The
     `x_coord`, `y_coord`, and `z_coord` fields represent physical coordinates.  Units
     should match those used in the spatial Dimensions of the acquisition.
+
+    Coordinates are written to the output metadata as-is (no correction for
+    field-of-view center vs. corner, or for camera/stage orientation):
+
+    - OME-TIFF: as the per-image `StageLabel`.
+    - OME-Zarr: added to the `translation` of the spatial dimension with the
+      matching name (`x`, `y`, `z`; case-insensitive), or for `x`/`y`, the last
+      two (frame) dimensions if none match by name. The position coordinate is
+      the origin of the image, and [`Dimension.translation`][ome_writers.Dimension]
+      is the offset of the first element from that origin (e.g. the first plane of a
+      z-stack acquired relative to `z_coord`).
     """
 
     name: NonNullStr = Field(
@@ -413,7 +424,10 @@ class Dimension(_BaseModel):
         default=None,
         description="Physical offset of the first element along this dimension, "
         "in the specified `unit`. (e.g. the physical coordinate of the first pixel "
-        "or timepoint, in some XYZ stage or other coordinate system).",
+        "or timepoint, in some XYZ stage or other coordinate system). For the "
+        "`x`/`y`/`z` dimensions (matched by name, or the last two frame dimensions "
+        "for `x`/`y`), this is relative to the corresponding `Position` coordinate "
+        "(if any).",
     )
 
     @model_validator(mode="before")
@@ -956,8 +970,8 @@ class AcquisitionSettings(_BaseModel):
         description="Desired output format/backend. Can be a simple string: 'ome-tiff' "
         "or 'ome-zarr', in which case the first available format-appropriate backend "
         "will be used; Or it may be a full format specification dict/object "
-        "([`ome_writers.OmeTiff`][] or [`ome_writers.OmeZarr`][]), to configure "
-        "format-specific options such as backend selection.",
+        "([`ome_writers.OmeTiffFormat`][] or [`ome_writers.OmeZarrFormat`][]), to "
+        "configure format-specific options such as backend selection.",
     )
     compression: Compression | None = Field(
         default=None,

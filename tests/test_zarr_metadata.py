@@ -12,6 +12,7 @@ from ome_writers import (
     AcquisitionSettings,
     Channel,
     Dimension,
+    Position,
     create_stream,
 )
 
@@ -124,6 +125,191 @@ def test_get_metadata_multiposition(tmp_path: Path) -> None:
     pos1_attrs: dict = dict(store["Pos1"].attrs)
     assert pos1_attrs["position_name"] == "Treatment"
     assert pos1_attrs["stage_position"]["x"] == 100.0
+
+
+def _image_translation(zarr_json: Path) -> dict[str, float]:
+    """Extract the per-axis translation from a multiscale image's zarr.json.
+
+    Example Return: {"c": 0.0, "z": 5.0, "y": 200.0, "x": 100.0}
+    """
+    doc = json.loads(zarr_json.read_text())
+    multiscales = doc["attributes"]["ome"]["multiscales"]
+    ms = multiscales[0]
+    axes = [ax["name"] for ax in ms["axes"]]
+    xforms = ms["datasets"][0]["coordinateTransformations"]
+    tx = next(t for t in xforms if t["type"] == "translation")["translation"]
+    return dict(zip(axes, tx, strict=True))
+
+
+def test_per_position_translation_bf2raw(tmp_path: Path) -> None:
+    """Each position's image carries its own X/Y/Z translation (bf2raw layout)."""
+    root = tmp_path / "multipos.ome.zarr"
+    settings = AcquisitionSettings(
+        root_path=str(root),
+        dimensions=[
+            Dimension(
+                name="p",
+                type="position",
+                coords=[
+                    Position(name="A", x_coord=100.0, y_coord=200.0, z_coord=5.0),
+                    Position(name="B", x_coord=500.0, y_coord=800.0, z_coord=10.0),
+                ],
+            ),
+            Dimension(name="c", count=1, type="channel"),
+            Dimension(name="z", count=3, type="space", unit="micrometer", scale=1.0),
+            Dimension(name="y", count=8, type="space", unit="micrometer", scale=0.5),
+            Dimension(name="x", count=8, type="space", unit="micrometer", scale=0.5),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={"name": "ome-zarr", "backend": "zarr-python"},
+    )
+
+    with create_stream(settings) as stream:
+        for _ in range(2 * 3):  # 2 positions * 3 z-planes
+            stream.append(np.zeros((8, 8), dtype=np.uint16))
+
+    a = _image_translation(root / "A" / "zarr.json")
+    b = _image_translation(root / "B" / "zarr.json")
+    assert a == {"c": 0.0, "z": 5.0, "y": 200.0, "x": 100.0}
+    assert b == {"c": 0.0, "z": 10.0, "y": 800.0, "x": 500.0}
+
+
+def test_per_position_translation_nonstandard_axis_names(tmp_path: Path) -> None:
+    """Unnamed frame dims fall back to (Y, X); Z is only matched by name."""
+    root = tmp_path / "custom_names.ome.zarr"
+    settings = AcquisitionSettings(
+        root_path=str(root),
+        dimensions=[
+            Dimension(
+                name="p",
+                type="position",
+                coords=[
+                    Position(name="A", x_coord=100.0, y_coord=200.0, z_coord=5.0),
+                    Position(name="B", x_coord=500.0, y_coord=800.0, z_coord=10.0),
+                ],
+            ),
+            Dimension(name="plane", count=3, type="space", unit="micrometer"),
+            Dimension(name="row", count=8, type="space", unit="micrometer", scale=0.5),
+            Dimension(name="col", count=8, type="space", unit="micrometer", scale=0.5),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={"name": "ome-zarr", "backend": "zarr-python"},
+    )
+
+    with create_stream(settings) as stream:
+        for _ in range(2 * 3):  # 2 positions * 3 planes
+            stream.append(np.zeros((8, 8), dtype=np.uint16))
+
+    a = _image_translation(root / "A" / "zarr.json")
+    b = _image_translation(root / "B" / "zarr.json")
+    # "plane" is not recognized as Z, so z_coord is dropped for zarr.
+    assert a == {"plane": 0.0, "row": 200.0, "col": 100.0}
+    assert b == {"plane": 0.0, "row": 800.0, "col": 500.0}
+
+
+def test_per_position_translation_adds_dim_translation(tmp_path: Path) -> None:
+    """`Dimension.translation` is an offset from the position coordinate.
+
+    e.g. a z-stack acquired relative to `Position.z_coord`, where the first plane
+    sits 2 µm below the position.
+    """
+    root = tmp_path / "additive.ome.zarr"
+    settings = AcquisitionSettings(
+        root_path=str(root),
+        dimensions=[
+            Dimension(
+                name="p",
+                type="position",
+                coords=[
+                    Position(name="A", x_coord=100.0, y_coord=200.0, z_coord=5.0),
+                    Position(name="B", x_coord=500.0, y_coord=800.0),
+                ],
+            ),
+            Dimension(name="z", count=3, type="space", unit="um", translation=-2.0),
+            Dimension(name="y", count=8, type="space", unit="um", translation=-4.0),
+            Dimension(name="x", count=8, type="space", unit="um", scale=0.5),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={"name": "ome-zarr", "backend": "zarr-python"},
+    )
+
+    with create_stream(settings) as stream:
+        for _ in range(2 * 3):
+            stream.append(np.zeros((8, 8), dtype=np.uint16))
+
+    assert _image_translation(root / "A" / "zarr.json") == {
+        "z": 3.0,
+        "y": 196.0,
+        "x": 100.0,
+    }
+    # no z_coord -> plain dim translation
+    assert _image_translation(root / "B" / "zarr.json") == {
+        "z": -2.0,
+        "y": 796.0,
+        "x": 500.0,
+    }
+
+
+def test_per_position_translation_case_insensitive_names(tmp_path: Path) -> None:
+    """Name-match for x/y/z is case-insensitive, and Z *is* picked up by name."""
+    root = tmp_path / "upper_names.ome.zarr"
+    settings = AcquisitionSettings(
+        root_path=str(root),
+        dimensions=[
+            Dimension(
+                name="p",
+                type="position",
+                coords=[
+                    Position(name="A", x_coord=100.0, y_coord=200.0, z_coord=5.0),
+                ],
+            ),
+            Dimension(name="Z", count=3, type="space", unit="micrometer"),
+            Dimension(name="Y", count=8, type="space", unit="micrometer", scale=0.5),
+            Dimension(name="X", count=8, type="space", unit="micrometer", scale=0.5),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={"name": "ome-zarr", "backend": "zarr-python"},
+    )
+
+    with create_stream(settings) as stream:
+        for _ in range(3):
+            stream.append(np.zeros((8, 8), dtype=np.uint16))
+
+    tx = _image_translation(root / "zarr.json")
+    assert tx == {"Z": 5.0, "Y": 200.0, "X": 100.0}
+
+
+def test_per_position_translation_single_position(tmp_path: Path) -> None:
+    """A single-position acquisition also captures its Position XYZ as translation."""
+    root = tmp_path / "single.ome.zarr"
+    settings = AcquisitionSettings(
+        root_path=str(root),
+        dimensions=[
+            Dimension(
+                name="p",
+                type="position",
+                coords=[Position(name="only", x_coord=111.0, y_coord=222.0)],
+            ),
+            Dimension(name="c", count=1, type="channel"),
+            Dimension(name="y", count=8, type="space", unit="micrometer", scale=0.5),
+            Dimension(name="x", count=8, type="space", unit="micrometer", scale=0.5),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={"name": "ome-zarr", "backend": "zarr-python"},
+    )
+
+    with create_stream(settings) as stream:
+        stream.append(np.zeros((8, 8), dtype=np.uint16))
+
+    tx = _image_translation(root / "zarr.json")
+    # no z_coord given -> dim.translation (None -> 0) used for z-less layout
+    assert tx["x"] == 111.0
+    assert tx["y"] == 222.0
 
 
 def test_update_metadata_error_handling(tmp_path: Path) -> None:
@@ -362,3 +548,17 @@ def test_frame_metadata_multiposition(tmp_path: Path) -> None:
         assert all(meta["position_name"] == pos_name for meta in frame_meta)
         assert [meta["frame_number"] for meta in frame_meta] == [0, 1]
         assert [meta["storage_index"] for meta in frame_meta] == [[0], [1]]
+
+
+def test_spatial_role_indices() -> None:
+    from ome_writers._util import spatial_role_indices
+
+    def _dims(*names: str) -> list[Dimension]:
+        return [Dimension(name=n, count=2, type="space") for n in names]
+
+    assert spatial_role_indices(_dims("z", "y", "x")) == {"z": 0, "y": 1, "x": 2}
+    assert spatial_role_indices(_dims("Z", "row", "col")) == {"z": 0, "y": 1, "x": 2}
+    # an xz scan: the frame is (z, x), and y must not fall back onto z's index
+    assert spatial_role_indices(_dims("z", "x")) == {"z": 0, "x": 1}
+    assert spatial_role_indices(_dims("a")) == {"x": 0}
+    assert spatial_role_indices([Dimension(name="t", count=2, type="time")]) == {}
