@@ -86,9 +86,6 @@ def _dims_from_useq(
     if not isinstance(seq, MDASequence):  # pragma: no cover
         raise ValueError("seq must be a useq.MDASequence")
 
-    # validate all of the rules mentioned in the docstring: squareness, etc...
-    _validate_sequence(seq)
-
     units = units or {}
     chunk_shapes = chunk_shapes or {}
     shard_shapes = shard_shapes or {}
@@ -105,6 +102,9 @@ def _dims_from_useq(
         sizes[Axis.TIME] = None
         used_axes = stripped.used_axes + Axis.TIME
 
+    # validate all of the rules mentioned in the docstring: squareness, etc...
+    _validate_sequence(seq, sizes, used_axes)
+
     dims: list[Dimension] = []
     position_dim_added = False
 
@@ -114,18 +114,23 @@ def _dims_from_useq(
         Axis.POSITION in used_axes or Axis.GRID in used_axes
         # or bool(seq.stage_positions)
     )
+    # p and g collapse into one dimension, which belongs wherever the combined
+    # loop actually varies -- not necessarily at whichever of the two comes first.
+    position_slot = _position_dim_slot(seq, sizes, used_axes) if has_positions else None
 
     # Build dimensions in axis_order (slowest to fastest)
     # skipping unused axes, (size=0)
     for ax_name in seq.axis_order:
-        if ax_name not in used_axes:
-            continue
-
+        # checked before `used_axes`: the slot may be an axis that does not appear
+        # there on its own (per-position grids show up in neither 'g' nor sizes).
         if ax_name in (Axis.POSITION, Axis.GRID):
-            if not position_dim_added and has_positions:
+            if ax_name == position_slot and not position_dim_added:
                 if positions := _build_positions(seq):
                     dims.append(StandardAxis.POSITION.to_dimension(coords=positions))
                     position_dim_added = True
+            continue
+
+        if ax_name not in used_axes:
             continue
 
         # Build dimension for t, c, z
@@ -212,7 +217,10 @@ def useq_to_acquisition_settings(
     **Grid and Position handling:**
 
     - Position and grid axes must be adjacent in axis_order (e.g., `"pgcz"`, not
-      `"pcgz"`).
+      `"pcgz"`) *when both of them vary*. If only one of the two contributes more
+      than one point -- a single stage position, a single-tile grid, or no grid at
+      all -- it adds no nesting of its own and the axes may be separated (e.g.
+      `"ptgc"` with one stage position).
     - Position subsequences may only contain a `grid_plan`, not time/channel/z-plans.
       Different positions *may* have different grid shapes.
     - If `stage_positions` is a `WellPlatePlan`, it cannot be
@@ -288,7 +296,71 @@ def useq_to_acquisition_settings(
     return {"dimensions": dims, "plate": _plate_from_useq(seq)}
 
 
-def _validate_sequence(seq: useq.MDASequence) -> None:
+def _grid_varies(
+    seq: useq.MDASequence, sizes: Mapping[str, int | None], used_axes: str
+) -> bool:
+    """Whether the grid axis contributes more than one point.
+
+    Per-position grid plans are expanded inside the position loop, so they show
+    up in neither `used_axes` nor `sizes` -- they still make the grid axis vary.
+    """
+    from useq import Axis, WellPlatePlan
+
+    if Axis.GRID in used_axes and (sizes.get(Axis.GRID) or 0) > 1:
+        return True
+    if not isinstance(seq.stage_positions, WellPlatePlan):
+        for pos in seq.stage_positions:
+            if (sub := pos.sequence) and sub.grid_plan is not None:
+                if sum(1 for _ in sub.grid_plan) > 1:
+                    return True
+    return False
+
+
+def _position_dim_slot(
+    seq: useq.MDASequence, sizes: Mapping[str, int | None], used_axes: str
+) -> str | None:
+    """Return the axis whose `axis_order` slot the flattened position dim occupies.
+
+    Frames are stored in arrival order, so the single position dimension we
+    flatten p and g into has to sit exactly where the combined loop varies:
+
+    - both axes vary -> they are adjacent (`_validate_sequence` enforces it) and
+      the outer one owns the slot;
+    - only one of them varies -> that one owns the slot, and the other adds no
+      nesting, so the two need not be adjacent;
+    - neither varies -> a length-1 dimension, so any slot iterates identically.
+    """
+    from useq import Axis
+
+    order = seq.axis_order
+    p_in_order = Axis.POSITION in order
+    g_in_order = Axis.GRID in order
+    if not (p_in_order or g_in_order):
+        return None
+
+    p_varies = Axis.POSITION in used_axes and (sizes.get(Axis.POSITION) or 0) > 1
+    g_varies = _grid_varies(seq, sizes, used_axes)
+
+    if p_varies and g_varies:
+        # adjacent by validation: the outer of the two is the combined loop's slot
+        preferred = min((Axis.POSITION, Axis.GRID), key=order.index)
+    elif g_varies:
+        preferred = Axis.GRID
+    elif p_varies:
+        preferred = Axis.POSITION
+    else:
+        preferred = Axis.POSITION if p_in_order else Axis.GRID
+
+    if preferred == Axis.GRID and not g_in_order:
+        return Axis.POSITION if p_in_order else None
+    if preferred == Axis.POSITION and not p_in_order:
+        return Axis.GRID if g_in_order else None
+    return preferred
+
+
+def _validate_sequence(
+    seq: useq.MDASequence, sizes: Mapping[str, int | None], used_axes: str
+) -> None:
     """Validate sequence for supported patterns (without iterating events).
 
     Raises
@@ -298,11 +370,18 @@ def _validate_sequence(seq: useq.MDASequence) -> None:
     """
     from useq import Axis, WellPlatePlan
 
-    # Check P/G adjacency in axis_order
+    # Check P/G adjacency in axis_order. Flattening (p,g) into one dimension only
+    # constrains the order when *both* axes vary: anything looping between them
+    # would then have to interleave with the flattened dimension. If just one of
+    # them varies it adds no nesting of its own and the flattened dimension simply
+    # takes the other's slot (see `_position_dim_slot`), so adjacency is moot --
+    # as is a grid axis that contributes no points at all.
     if Axis.POSITION in seq.axis_order and Axis.GRID in seq.axis_order:
+        p_varies = Axis.POSITION in used_axes and (sizes.get(Axis.POSITION) or 0) > 1
+        g_varies = _grid_varies(seq, sizes, used_axes)
         p_idx = seq.axis_order.index(Axis.POSITION)
         g_idx = seq.axis_order.index(Axis.GRID)
-        if abs(p_idx - g_idx) != 1:
+        if p_varies and g_varies and abs(p_idx - g_idx) != 1:
             raise NotImplementedError(
                 f"Cannot handle axis_order={seq.axis_order} with non-adjacent position "
                 "and grid axes. We flatten (p,g) into a single position dimension, "

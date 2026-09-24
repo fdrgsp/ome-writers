@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from itertools import product
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -413,6 +414,82 @@ SEQ_CASES = [
         ],
         id="random_points_grid",
     ),
+    # p and g non-adjacent, but only one of them varies, so the flattened
+    # position dimension has an unambiguous slot and the order is supported.
+    Case(
+        seq=useq.MDASequence(
+            axis_order="ptgc",
+            stage_positions=[useq.Position(x=-256.005, y=256.005)],
+            grid_plan=useq.GridRowsColumns(
+                rows=2, columns=2, fov_width=512.0, fov_height=512.0
+            ),
+            time_plan={"interval": 0.1, "loops": 3},
+            channels=["DAPI"],
+        ),
+        # the tiles vary inside t, so the position dim takes g's slot, not p's
+        expected_dim_names=["t", "p", "c", "y", "x"],
+        expected_positions=[
+            ExpectedPosition(name="0", grid_row=0, grid_col=0),
+            ExpectedPosition(name="0", grid_row=0, grid_col=1),
+            ExpectedPosition(name="0", grid_row=1, grid_col=1),
+            ExpectedPosition(name="0", grid_row=1, grid_col=0),
+        ],
+        id="single_position_grid_not_adjacent",
+    ),
+    Case(
+        seq=useq.MDASequence(
+            axis_order="ptgc",
+            stage_positions=[(0.0, 0.0), (10.0, 10.0)],
+            time_plan={"interval": 0.1, "loops": 3},
+            channels=["DAPI"],
+        ),
+        # no grid at all: the position dim keeps p's slot
+        expected_dim_names=["p", "t", "c", "y", "x"],
+        expected_positions=[ExpectedPosition(name="0"), ExpectedPosition(name="1")],
+        id="no_grid_plan_not_adjacent",
+    ),
+    Case(
+        seq=useq.MDASequence(
+            axis_order="gtpc",
+            stage_positions=[(0.0, 0.0), (10.0, 10.0)],
+            grid_plan=useq.GridRowsColumns(rows=1, columns=1),
+            time_plan={"interval": 0.1, "loops": 3},
+            channels=["DAPI"],
+        ),
+        # single-tile grid: the position dim takes p's slot
+        expected_dim_names=["t", "p", "c", "y", "x"],
+        expected_positions=[
+            ExpectedPosition(name="0", grid_row=0, grid_col=0),
+            ExpectedPosition(name="1", grid_row=0, grid_col=0),
+        ],
+        id="single_tile_grid_not_adjacent",
+    ),
+    Case(
+        seq=useq.MDASequence(
+            axis_order="ptgc",
+            stage_positions=[
+                useq.Position(
+                    x=0.0,
+                    y=0.0,
+                    sequence=useq.MDASequence(
+                        grid_plan=useq.GridRowsColumns(
+                            rows=1, columns=2, fov_width=10.0, fov_height=10.0
+                        )
+                    ),
+                )
+            ],
+            time_plan={"interval": 0.1, "loops": 3},
+            channels=["DAPI"],
+        ),
+        # a per-position grid shows up in neither used_axes nor sizes, but it
+        # still varies at g's slot
+        expected_dim_names=["t", "p", "c", "y", "x"],
+        expected_positions=[
+            ExpectedPosition(name="0", grid_row=0, grid_col=0),
+            ExpectedPosition(name="0", grid_row=0, grid_col=1),
+        ],
+        id="single_position_subgrid_not_adjacent",
+    ),
 ]
 
 
@@ -604,6 +681,46 @@ def test_unsupported_sequences_raise(seq: useq.MDASequence, error_pattern: str) 
     """Test that ragged dimension cases raise NotImplementedError."""
     with pytest.raises(NotImplementedError, match=error_pattern):
         useq_to_acquisition_settings(seq, image_width=64, image_height=64)
+
+
+@pytest.mark.parametrize("case", SEQ_CASES, ids=lambda c: c.id)
+def test_dims_match_event_arrival_order(case: Case) -> None:
+    """The reported dimensions must enumerate events in the order they arrive.
+
+    Frames are written by arrival order, not by their event index, so the
+    dimension list has to be the exact odometer of the event stream. This is
+    what makes a flattened (p,g) dimension order-sensitive: putting it in the
+    wrong slot silently scatters tiles across the wrong timepoints.
+    """
+    dims = useq_to_acquisition_settings(case.seq, image_width=64, image_height=64)[
+        "dimensions"
+    ]
+    non_frame = dims[:-2]
+    shape = [len(d.coords) if d.type == "position" else d.count for d in non_frame]
+    if any(s is None for s in shape):  # unbounded time; nothing to enumerate
+        return
+
+    events = list(case.seq)
+    expected = list(product(*(range(s) for s in shape)))
+    assert len(events) == len(expected)
+
+    # A frame's slot along the flattened position dimension is its (p,g) pair;
+    # order them by first appearance, which is the order the position coords are
+    # built in (their contents are checked by `test_useq_to_dims`).
+    pg_order: list[tuple[int, int | None]] = []
+    for event in events:
+        pg = (event.index.get("p", 0), event.index.get("g"))
+        if pg not in pg_order:
+            pg_order.append(pg)
+
+    for event, exp in zip(events, expected, strict=False):
+        actual = tuple(
+            pg_order.index((event.index.get("p", 0), event.index.get("g")))
+            if d.type == "position"
+            else event.index.get(d.name, 0)
+            for d in non_frame
+        )
+        assert actual == exp, f"{event.index} arrived where {exp} was expected"
 
 
 def test_useq_manual_units() -> None:
