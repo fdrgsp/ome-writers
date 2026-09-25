@@ -1313,16 +1313,16 @@ def _suffixes(*positions: Position) -> list[str]:
                 "_A2_p001_r001_c000",
             ],
         ),
-        # Repeated stage identity with no grid coords to disambiguate with
-        # (e.g. two fields of one well, unpositioned): fall back to a tile
-        # counter so the filenames can never collide.
+        # Several fields in one well with no grid coordinates (e.g. a
+        # RandomPoints well_points_plan): these are distinct positions, not
+        # tiles of a grid, so each gets its own ordinal and no r/c suffix.
         (
             (
                 Position(name="fov0", plate_row="A", plate_column="1"),
+                Position(name="fov1", plate_row="A", plate_column="1"),
                 Position(name="fov0", plate_row="C", plate_column="4"),
-                Position(name="fov1", plate_row="C", plate_column="4"),
             ),
-            ["_A1_p000", "_C4_p001_g000", "_C4_p001_g001"],
+            ["_A1_p000", "_A1_p001", "_C4_p002"],
         ),
     ],
     ids=[
@@ -1330,7 +1330,7 @@ def _suffixes(*positions: Position) -> list[str]:
         "grid_per_position",
         "plate_single_fov",
         "plate_multi_fov",
-        "repeated_identity_without_grid_coords",
+        "plate_random_points",
     ],
 )
 def test_position_filename_suffixes(

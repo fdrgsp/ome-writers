@@ -283,7 +283,7 @@ def _make_uuid() -> str:
     return f"urn:uuid:{uuid.uuid4()}"
 
 
-def _stage_identity(pos: Position) -> tuple[str | None, ...]:
+def _stage_identity(pos: Position, flat_index: int) -> tuple[object, ...]:
     """Return the key identifying the *stage location* a position belongs to.
 
     A flattened position dimension interleaves two different things: the
@@ -291,11 +291,19 @@ def _stage_identity(pos: Position) -> tuple[str | None, ...]:
     This key names only the former, so that repeats of it are recognizable
     as tiles of one location.
 
-    For a well plate, the stage location is the **well** -- `Position.name`
+    Only a position carrying grid coordinates is a tile of something. Without
+    them the position is a location in its own right -- an ordinary stage
+    position, or a randomly sampled point within a well (`RandomPoints`),
+    which is a distinct position rather than a tile of a regular grid -- so
+    it gets an identity unique to itself.
+
+    For a gridded well plate the location is the **well**: `Position.name`
     there identifies the field of view within the well (e.g. "fov0"), so it
     is deliberately excluded. Otherwise the name identifies the stage
     position itself and is shared by all of its grid tiles.
     """
+    if pos.grid_row is None or pos.grid_column is None:
+        return ("", flat_index)
     if pos.plate_row is not None or pos.plate_column is not None:
         return (pos.plate_row, pos.plate_column)
     return (pos.name,)
@@ -315,41 +323,44 @@ def _position_filename_suffixes(positions: list[Position]) -> list[str]:
     Plate positions are additionally prefixed with their well (e.g. `_A1`),
     which is what actually identifies the location to a human reader.
 
-    A tile suffix is appended only when that stage identity actually repeats
-    -- i.e. the location really does have more than one tile -- so a single
-    tile per location (including a grid-only acquisition, which enumerates
-    its tiles as the positions themselves) keeps plain `_p###` naming rather
-    than a redundant `p001_r000_c001`. When it does repeat, the suffix is
-    `_r{row:03}_c{col:03}` if grid coordinates are known (an ordinary grid, or
-    a plate's multi-FOV `well_points_plan`), else `_g{n:03}` counting tiles
-    within that location. One is always added, so a repeated identity can
-    never collapse two positions onto the same filename.
+    A `_r{row:03}_c{col:03}` tile suffix is appended only when that stage
+    identity actually repeats -- i.e. the location really does have more than
+    one tile -- so a single tile per location (including a grid-only
+    acquisition, which enumerates its tiles as the positions themselves)
+    keeps plain `_p###` naming rather than a redundant `p001_r000_c001`.
     """
-    identity_counts: dict[tuple[str | None, ...], int] = {}
-    for pos in positions:
-        key = _stage_identity(pos)
+    keys = [_stage_identity(pos, i) for i, pos in enumerate(positions)]
+
+    identity_counts: dict[tuple[object, ...], int] = {}
+    for key in keys:
         identity_counts[key] = identity_counts.get(key, 0) + 1
 
-    stage_ordinal: dict[tuple[str | None, ...], int] = {}
-    tiles_seen: dict[tuple[str | None, ...], int] = {}
+    stage_ordinal: dict[tuple[object, ...], int] = {}
     suffixes: list[str] = []
-    for pos in positions:
-        key = _stage_identity(pos)
+    for pos, key in zip(positions, keys, strict=True):
         if key not in stage_ordinal:
             stage_ordinal[key] = len(stage_ordinal)
-        tile_idx = tiles_seen.get(key, 0)
-        tiles_seen[key] = tile_idx + 1
 
         suffix = ""
         if pos.plate_row is not None and pos.plate_column is not None:
             suffix += f"_{pos.plate_row}{pos.plate_column}"
         suffix += f"_p{stage_ordinal[key]:03}"
         if identity_counts[key] > 1:
-            if pos.grid_row is not None and pos.grid_column is not None:
-                suffix += f"_r{pos.grid_row:03}_c{pos.grid_column:03}"
-            else:
-                suffix += f"_g{tile_idx:03}"
+            # Only a grid-coordinate-bearing position can share an identity,
+            # so row/column are known to be set here.
+            suffix += f"_r{pos.grid_row:03}_c{pos.grid_column:03}"
         suffixes.append(suffix)
+
+    # Distinct files must never collapse onto one path: prepare_metadata keys
+    # its mirrors by path, so a duplicate silently drops a position's writer.
+    # Nothing above should produce one, but a malformed grid (two tiles
+    # reporting the same row/column) would, so break any tie explicitly.
+    if len(set(suffixes)) != len(suffixes):  # pragma: no cover
+        seen: set[str] = set()
+        for i, suffix in enumerate(suffixes):
+            if suffix in seen:
+                suffixes[i] = f"{suffix}_{i:03}"
+            seen.add(suffixes[i])
     return suffixes
 
 
