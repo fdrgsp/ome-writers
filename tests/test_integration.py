@@ -501,11 +501,17 @@ def _assert_valid_ome_tiff(case: AcquisitionSettings) -> None:
     if num_pos == 1:
         paths = [Path(case.output_path)]
     else:
-        # Multi-position: output_path is a directory, files are inside it
+        # Multi-position: output_path is a directory, files are inside it.
+        # Delegate to the real naming logic (stage-ordinal + tile r/c suffix
+        # for positions that share a grid) instead of re-deriving it here,
+        # so this test can't silently drift from what production writes.
+        from ome_writers._backends._ome_xml import _position_filename_suffixes
+
         output_dir = Path(case.output_path)
+        suffixes = _position_filename_suffixes(list(case.positions))
         paths = [
-            output_dir / f"{output_dir.name}_p{i:03d}{case.format.suffix}"
-            for i in range(num_pos)
+            output_dir / f"{output_dir.name}{suffix}{case.format.suffix}"
+            for suffix in suffixes
         ]
 
     dims = case.array_storage_dimensions

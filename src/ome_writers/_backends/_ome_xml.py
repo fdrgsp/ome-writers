@@ -283,6 +283,45 @@ def _make_uuid() -> str:
     return f"urn:uuid:{uuid.uuid4()}"
 
 
+def _position_filename_suffixes(positions: list[Position]) -> list[str]:
+    """Return a per-position `_p###[_r###_c###]` filename suffix.
+
+    `p` is the position's *stage* ordinal (first-appearance order among
+    distinct `(name, plate_row, plate_column)` identities), not its flat
+    index in `positions` -- for an ordinary (non-grid) acquisition the two
+    coincide, but a grid tiles multiple flat entries onto the same stage
+    identity, and the flat index alone can't tell those apart (e.g. two
+    stage positions each with their own 2-tile grid previously all fell
+    under the same misleading `p000..p003` range).
+
+    A `_r{row:03}_c{col:03}` tile suffix is appended only when that stage
+    identity actually repeats (i.e. it really does have more than one
+    tile) and grid coordinates are available -- so ordinary multi-position
+    runs and well-plate positions (whose names, e.g. "fov0"/"fov1", are
+    already unique) are unaffected and keep today's plain `_p###` naming.
+    """
+    identity_counts: dict[tuple[str, str | None, str | None], int] = {}
+    for pos in positions:
+        key = (pos.name, pos.plate_row, pos.plate_column)
+        identity_counts[key] = identity_counts.get(key, 0) + 1
+
+    stage_ordinal: dict[tuple[str, str | None, str | None], int] = {}
+    suffixes: list[str] = []
+    for pos in positions:
+        key = (pos.name, pos.plate_row, pos.plate_column)
+        if key not in stage_ordinal:
+            stage_ordinal[key] = len(stage_ordinal)
+        suffix = f"_p{stage_ordinal[key]:03}"
+        if (
+            identity_counts[key] > 1
+            and pos.grid_row is not None
+            and pos.grid_column is not None
+        ):
+            suffix += f"_r{pos.grid_row:03}_c{pos.grid_column:03}"
+        suffixes.append(suffix)
+    return suffixes
+
+
 def _generate_file_infos(
     settings: AcquisitionSettings, single_file: bool
 ) -> list[FileInfo]:
@@ -311,13 +350,14 @@ def _generate_file_infos(
     # Create output directory if it doesn't exist
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    suffixes = _position_filename_suffixes(list(positions))
     return [
         FileInfo(
-            path=str(output_dir / f"{stem}_p{idx:03}{extension}"),
+            path=str(output_dir / f"{stem}{suffix}{extension}"),
             uuid=_make_uuid(),
             pos_idx=idx,
         )
-        for idx, _pos in enumerate(positions)
+        for idx, suffix in enumerate(suffixes)
     ]
 
 
