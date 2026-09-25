@@ -283,41 +283,72 @@ def _make_uuid() -> str:
     return f"urn:uuid:{uuid.uuid4()}"
 
 
+def _stage_identity(pos: Position) -> tuple[str | None, ...]:
+    """Return the key identifying the *stage location* a position belongs to.
+
+    A flattened position dimension interleaves two different things: the
+    stage location visited, and which tile of that location the frame is.
+    This key names only the former, so that repeats of it are recognizable
+    as tiles of one location.
+
+    For a well plate, the stage location is the **well** -- `Position.name`
+    there identifies the field of view within the well (e.g. "fov0"), so it
+    is deliberately excluded. Otherwise the name identifies the stage
+    position itself and is shared by all of its grid tiles.
+    """
+    if pos.plate_row is not None or pos.plate_column is not None:
+        return (pos.plate_row, pos.plate_column)
+    return (pos.name,)
+
+
 def _position_filename_suffixes(positions: list[Position]) -> list[str]:
-    """Return a per-position `_p###[_r###_c###]` filename suffix.
+    """Return a per-position `[_{well}]_p###[_r###_c###]` filename suffix.
 
     `p` is the position's *stage* ordinal (first-appearance order among
-    distinct `(name, plate_row, plate_column)` identities), not its flat
-    index in `positions` -- for an ordinary (non-grid) acquisition the two
-    coincide, but a grid tiles multiple flat entries onto the same stage
-    identity, and the flat index alone can't tell those apart (e.g. two
-    stage positions each with their own 2-tile grid previously all fell
-    under the same misleading `p000..p003` range).
+    distinct stage identities, see `_stage_identity`), not its flat index
+    in `positions` -- for a single-tile-per-location acquisition the two
+    coincide, but a grid maps several flat entries onto one stage location,
+    and the flat index alone can't tell those apart (e.g. two stage
+    positions each with their own 2-tile grid previously all fell under the
+    same misleading `p000..p003` range, reordering with `axis_order`).
 
-    A `_r{row:03}_c{col:03}` tile suffix is appended only when that stage
-    identity actually repeats (i.e. it really does have more than one
-    tile) and grid coordinates are available -- so ordinary multi-position
-    runs and well-plate positions (whose names, e.g. "fov0"/"fov1", are
-    already unique) are unaffected and keep today's plain `_p###` naming.
+    Plate positions are additionally prefixed with their well (e.g. `_A1`),
+    which is what actually identifies the location to a human reader.
+
+    A tile suffix is appended only when that stage identity actually repeats
+    -- i.e. the location really does have more than one tile -- so a single
+    tile per location (including a grid-only acquisition, which enumerates
+    its tiles as the positions themselves) keeps plain `_p###` naming rather
+    than a redundant `p001_r000_c001`. When it does repeat, the suffix is
+    `_r{row:03}_c{col:03}` if grid coordinates are known (an ordinary grid, or
+    a plate's multi-FOV `well_points_plan`), else `_g{n:03}` counting tiles
+    within that location. One is always added, so a repeated identity can
+    never collapse two positions onto the same filename.
     """
-    identity_counts: dict[tuple[str, str | None, str | None], int] = {}
+    identity_counts: dict[tuple[str | None, ...], int] = {}
     for pos in positions:
-        key = (pos.name, pos.plate_row, pos.plate_column)
+        key = _stage_identity(pos)
         identity_counts[key] = identity_counts.get(key, 0) + 1
 
-    stage_ordinal: dict[tuple[str, str | None, str | None], int] = {}
+    stage_ordinal: dict[tuple[str | None, ...], int] = {}
+    tiles_seen: dict[tuple[str | None, ...], int] = {}
     suffixes: list[str] = []
     for pos in positions:
-        key = (pos.name, pos.plate_row, pos.plate_column)
+        key = _stage_identity(pos)
         if key not in stage_ordinal:
             stage_ordinal[key] = len(stage_ordinal)
-        suffix = f"_p{stage_ordinal[key]:03}"
-        if (
-            identity_counts[key] > 1
-            and pos.grid_row is not None
-            and pos.grid_column is not None
-        ):
-            suffix += f"_r{pos.grid_row:03}_c{pos.grid_column:03}"
+        tile_idx = tiles_seen.get(key, 0)
+        tiles_seen[key] = tile_idx + 1
+
+        suffix = ""
+        if pos.plate_row is not None and pos.plate_column is not None:
+            suffix += f"_{pos.plate_row}{pos.plate_column}"
+        suffix += f"_p{stage_ordinal[key]:03}"
+        if identity_counts[key] > 1:
+            if pos.grid_row is not None and pos.grid_column is not None:
+                suffix += f"_r{pos.grid_row:03}_c{pos.grid_column:03}"
+            else:
+                suffix += f"_g{tile_idx:03}"
         suffixes.append(suffix)
     return suffixes
 

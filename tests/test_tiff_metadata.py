@@ -170,15 +170,17 @@ def test_update_metadata_with_plates(tmp_path: Path, tiff_backend: str) -> None:
     # but the actual image data in each file corresponds to its position index
     # Multi-position TIFFs are now stored in a subdirectory
     plate_dir = tmp_path / "plate"
+    # Plate files are named by their well, then the well's ordinal.
+    pos_filenames = ["plate_A1_p000.ome.tiff", "plate_A2_p001.ome.tiff"]
     for pos_idx, expected_name in enumerate(["Well_A01", "Well_A02"]):
-        pos_file = plate_dir / f"plate_p{pos_idx:03d}.ome.tiff"
+        pos_file = plate_dir / pos_filenames[pos_idx]
         ome_obj = from_tiff(str(pos_file))
         # All files have all positions in metadata, check the one that matches this file
         assert len(ome_obj.images) == 2
         assert ome_obj.images[pos_idx].name == expected_name
 
     # Verify plate structure
-    ome_obj = from_tiff(str(plate_dir / "plate_p000.ome.tiff"))
+    ome_obj = from_tiff(str(plate_dir / pos_filenames[0]))
     assert len(ome_obj.plates) == 1
     plate = ome_obj.plates[0]
     assert plate.id == "Plate:0"
@@ -207,9 +209,8 @@ def test_update_metadata_with_plates(tmp_path: Path, tiff_backend: str) -> None:
     stream.update_metadata(metadata)
 
     # Verify each well file has updated names
-    for pos_idx in range(2):
-        pos_file = plate_dir / f"plate_p{pos_idx:03d}.ome.tiff"
-        ome_obj = from_tiff(str(pos_file))
+    for filename in pos_filenames:
+        ome_obj = from_tiff(str(plate_dir / filename))
         assert ome_obj.images[0].name == "Well A01"
         assert ome_obj.images[1].name == "Well A02"
 
@@ -614,8 +615,13 @@ def _get_full_ome(settings: AcquisitionSettings) -> ome_types.OME:
         with open(companion_path, encoding="utf-8") as f:
             return from_xml(f.read())
     elif metadata_mode == MultiFileMetadata.MASTER_TIFF:
-        # First TIFF file is the master
-        master = next(f for f in output_path.glob("*_p000.ome.tiff"))
+        # The first position's TIFF file is the master. Derive its name from
+        # the same helper production uses, rather than guessing a glob -- the
+        # suffix carries well/tile information for plates and grids.
+        from ome_writers._backends._ome_xml import _position_filename_suffixes
+
+        suffix = _position_filename_suffixes(list(settings.positions))[0]
+        master = output_path / f"{output_path.name}{suffix}{settings.format.suffix}"
         return from_tiff(str(master))
     else:  # metadata_mode == MultiFileMetadata.REDUNDANT
         # Any TIFF file has full metadata
@@ -1222,3 +1228,139 @@ def test_tiff_global_metadata_pre_and_post_close(
     anns = _anns_by_ns(ome_obj, "ns")
     assert len(anns) == 1
     assert _decode_map(anns[0]) == {"phase": "post"}
+
+
+# ---------------------------------------------------------------------------
+# Multi-file OME-TIFF filename derivation
+# ---------------------------------------------------------------------------
+
+
+def _suffixes(*positions: Position) -> list[str]:
+    from ome_writers._backends._ome_xml import _position_filename_suffixes
+
+    return _position_filename_suffixes(list(positions))
+
+
+@pytest.mark.parametrize(
+    ("positions", "expected"),
+    [
+        # Plain multi-position: stage ordinal == flat index, no tile suffix.
+        (
+            (Position(name="Pos0"), Position(name="Pos1")),
+            ["_p000", "_p001"],
+        ),
+        # A grid tiles several entries onto one stage position: `p` stays the
+        # stage position and row/col identify the tile.
+        (
+            (
+                Position(name="Pos0", grid_row=0, grid_column=0),
+                Position(name="Pos0", grid_row=0, grid_column=1),
+                Position(name="Pos1", grid_row=0, grid_column=0),
+                Position(name="Pos1", grid_row=0, grid_column=1),
+            ),
+            [
+                "_p000_r000_c000",
+                "_p000_r000_c001",
+                "_p001_r000_c000",
+                "_p001_r000_c001",
+            ],
+        ),
+        # Plate: the well is the stage location, and is named in the file.
+        # A single FOV per well needs no tile suffix.
+        (
+            (
+                Position(name="fov0", plate_row="A", plate_column="1"),
+                Position(name="fov0", plate_row="B", plate_column="2"),
+            ),
+            ["_A1_p000", "_B2_p001"],
+        ),
+        # Plate with a multi-FOV well_points_plan: tiles of one well.
+        (
+            (
+                Position(
+                    name="fov0",
+                    plate_row="A",
+                    plate_column="1",
+                    grid_row=0,
+                    grid_column=0,
+                ),
+                Position(
+                    name="fov1",
+                    plate_row="A",
+                    plate_column="1",
+                    grid_row=1,
+                    grid_column=0,
+                ),
+                Position(
+                    name="fov0",
+                    plate_row="A",
+                    plate_column="2",
+                    grid_row=0,
+                    grid_column=0,
+                ),
+                Position(
+                    name="fov1",
+                    plate_row="A",
+                    plate_column="2",
+                    grid_row=1,
+                    grid_column=0,
+                ),
+            ),
+            [
+                "_A1_p000_r000_c000",
+                "_A1_p000_r001_c000",
+                "_A2_p001_r000_c000",
+                "_A2_p001_r001_c000",
+            ],
+        ),
+        # Repeated stage identity with no grid coords to disambiguate with
+        # (e.g. two fields of one well, unpositioned): fall back to a tile
+        # counter so the filenames can never collide.
+        (
+            (
+                Position(name="fov0", plate_row="A", plate_column="1"),
+                Position(name="fov0", plate_row="C", plate_column="4"),
+                Position(name="fov1", plate_row="C", plate_column="4"),
+            ),
+            ["_A1_p000", "_C4_p001_g000", "_C4_p001_g001"],
+        ),
+    ],
+    ids=[
+        "plain_multiposition",
+        "grid_per_position",
+        "plate_single_fov",
+        "plate_multi_fov",
+        "repeated_identity_without_grid_coords",
+    ],
+)
+def test_position_filename_suffixes(
+    positions: tuple[Position, ...], expected: list[str]
+) -> None:
+    assert _suffixes(*positions) == expected
+
+
+def test_position_filename_suffixes_are_unique() -> None:
+    """Every multi-file OME-TIFF name must be distinct.
+
+    `prepare_metadata` keys its mirrors by path, so two positions sharing a
+    filename silently drop one position's writer entirely.
+    """
+    cases: list[tuple[Position, ...]] = [
+        (Position(name="p"), Position(name="p", grid_row=0, grid_column=0)),
+        # same well, no grid info at all
+        (
+            Position(name="a", plate_row="A", plate_column="1"),
+            Position(name="b", plate_row="A", plate_column="1"),
+            Position(name="c", plate_row="A", plate_column="1"),
+        ),
+        # same well, one field gridded and one not
+        (
+            Position(
+                name="a", plate_row="A", plate_column="1", grid_row=0, grid_column=0
+            ),
+            Position(name="b", plate_row="A", plate_column="1"),
+        ),
+    ]
+    for positions in cases:
+        suffixes = _suffixes(*positions)
+        assert len(set(suffixes)) == len(suffixes), suffixes
