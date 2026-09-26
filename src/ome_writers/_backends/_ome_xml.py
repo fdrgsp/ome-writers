@@ -36,6 +36,13 @@ class MultiFileMetadata(Enum):
     """First TIFF has full OME-XML, others have BinData references."""
     COMPANION = "companion-file"
     """All TIFFs have BinData only, full OME-XML in separate companion file."""
+    SELF_CONTAINED = "self-contained"
+    """Each TIFF describes only its own position, with no references to siblings.
+
+    Unlike the other three modes, this does not produce a multi-file OME-TIFF
+    *set*: it produces N independent single-series OME-TIFFs that happen to share
+    a directory.  Each file can be opened, moved, or deleted on its own.
+    """
 
 
 class OmeXMLMirror:
@@ -48,15 +55,35 @@ class OmeXMLMirror:
         metadata.
     model : ome.OME | None, optional
         Initial OME model to use. If None, an empty OME model is created.
+    image_index : int | None, optional
+        Index of *this position's* `Image` within `model.images`. Full-OME mirrors
+        carry every position, so the image sits at its position index (the default).
+        Self-contained mirrors carry only their own image, at index 0.
     """
 
     def __init__(
-        self, path: str | Path, pos_idx: int | None, model: ome.OME | None = None
+        self,
+        path: str | Path,
+        pos_idx: int | None,
+        model: ome.OME | None = None,
+        image_index: int | None = None,
     ) -> None:
         self.path: str = str(path)
         self.pos_idx: int = COMPANION_IDX if pos_idx is None else pos_idx
         self.model = model or ome.OME()
+        self.image_index: int = self.pos_idx if image_index is None else image_index
         self._dirty: bool = False
+
+    def own_pixels(self) -> ome.Pixels | None:
+        """Return the `Pixels` of this position's own `Image`, if present.
+
+        Returns None for BinaryOnly stubs and the companion mirror, which hold no
+        image of their own.
+        """
+        images = self.model.images
+        if 0 <= self.image_index < len(images):
+            return images[self.image_index].pixels
+        return None
 
     def mark_dirty(self) -> None:
         """Mark the OME-XML as dirty (modified)."""
@@ -142,7 +169,8 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
     mirrors (BinData-only references to another file) MUST set
     ``model.binary_only``, and full-OME mirrors MUST leave it unset. The
     backend uses that flag to decide which file(s) receive global
-    `MapAnnotation` updates.
+    `MapAnnotation` updates.  Self-contained mirrors are full-OME by this
+    definition, so (as in redundant mode) every file receives a copy.
     """
     if not isinstance(settings.format, OmeTiffFormat):
         raise ValueError("Expected settings.format to be an OmeTiffFormat instance.")
@@ -187,11 +215,25 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
         # Ensure parent directory exists
         path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build the complete OME model with all series
-    full_model = _build_full_model(settings, file_infos, single_file)
-
     # Create mirrors based on file structure and metadata arrangement
     mirrors: dict[str, OmeXMLMirror] = {}
+
+    if metadata_mode == MultiFileMetadata.SELF_CONTAINED:
+        # Each file gets its own single-image model.  Note that no full model is
+        # built: the other modes copy an N-image model into N files, which makes
+        # store preparation quadratic in position count.
+        ctx = _image_context(settings)
+        for info, pos in zip(file_infos, settings.positions, strict=True):
+            mirrors[info.path] = OmeXMLMirror(
+                path=info.path,
+                pos_idx=info.pos_idx,
+                model=_build_self_contained_model(ctx, settings, info, pos),
+                image_index=0,
+            )
+        return mirrors
+
+    # Build the complete OME model with all series
+    full_model = _build_full_model(settings, file_infos, single_file)
 
     if single_file:
         # Single file contains everything
@@ -403,24 +445,98 @@ def _generate_file_infos(
     ]
 
 
+class _ImageContext(NamedTuple):
+    """Position-independent inputs for building `ome.Image` elements.
+
+    Computed once per acquisition so that building N per-position models costs
+    O(N) rather than re-deriving shared structure for every position.
+    """
+
+    dims: list[Dimension]
+    dimension_order: str
+    channel_dim: Dimension | None
+    size_x: int
+    size_y: int
+    size_z: int
+    size_c: int
+    size_t: int
+    physical_sizes: dict
+    dtype: str
+
+    @property
+    def planes_per_series(self) -> int:
+        return self.size_t * self.size_c * self.size_z
+
+
+def _image_context(settings: AcquisitionSettings) -> _ImageContext:
+    """Derive the shared, position-independent `ome.Image` inputs."""
+    dims = [d for d in settings.dimensions if d.type != "position"]
+    pixel_sizes = {"z": 1, "c": 1, "t": 1}
+    pixel_sizes.update({d.name.lower(): d.count or 1 for d in dims})
+    return _ImageContext(
+        dims=dims,
+        dimension_order=_get_dimension_order(dims),
+        channel_dim=next(
+            (d for d in dims if d.type == "channel" or d.name.lower() == "c"), None
+        ),
+        size_x=pixel_sizes["x"],
+        size_y=pixel_sizes["y"],
+        size_z=pixel_sizes["z"],
+        size_c=pixel_sizes["c"],
+        size_t=pixel_sizes["t"],
+        physical_sizes=_get_physical_sizes(dims),
+        dtype=settings.dtype,
+    )
+
+
+def _build_image(
+    ctx: _ImageContext, pos: Position, tiff_data: ome.TiffData, idx: int
+) -> ome.Image:
+    """Build one `ome.Image`, numbering its OME IDs with `idx`.
+
+    `idx` is the index *within the containing document*, which is the position
+    index for full-OME models but always 0 for self-contained ones.
+    """
+    if ctx.channel_dim and ctx.channel_dim.coords:
+        channels = [
+            _cast_channel(omw_channel=c, id=f"Channel:{idx}:{cidx}")
+            for cidx, c in enumerate(ctx.channel_dim.coords)
+        ]
+    else:
+        channels = [ome.Channel(id=f"Channel:{idx}:{c}") for c in range(ctx.size_c)]
+
+    pixels = ome.Pixels(
+        id=f"Pixels:{idx}",
+        dimension_order=ctx.dimension_order,
+        size_x=ctx.size_x,
+        size_y=ctx.size_y,
+        size_z=ctx.size_z,
+        size_c=ctx.size_c,
+        size_t=ctx.size_t,
+        **ctx.physical_sizes,
+        type=ctx.dtype,
+        # big_endian=False,
+        channels=channels,
+        tiff_data_blocks=[tiff_data],
+    )
+    return ome.Image(
+        id=f"Image:{idx}",
+        name=pos.name,
+        pixels=pixels,
+        acquisition_date=datetime.now(timezone.utc),
+        stage_label=_build_stage_label(pos, ctx.dims),
+    )
+
+
 def _build_full_model(
     settings: AcquisitionSettings, file_infos: list[FileInfo], single_file: bool
 ) -> ome_types.OME:
     """Build complete OME model with all series/images."""
-    dims = [d for d in settings.dimensions if d.type != "position"]
-    dimension_order = _get_dimension_order(dims)
-    channel_dim = next(
-        (d for d in dims if d.type == "channel" or d.name.lower() == "c"), None
-    )
-    pixel_sizes = {"z": 1, "c": 1, "t": 1}
-    pixel_sizes.update({d.name.lower(): d.count or 1 for d in dims})
-    size_t = pixel_sizes["t"]
-    size_c = pixel_sizes["c"]
-    size_z = pixel_sizes["z"]
+    ctx = _image_context(settings)
+    planes_per_series = ctx.planes_per_series
 
     # Track cumulative IFD offset for single-file mode
     ifd_offset = 0
-    planes_per_series = size_t * size_c * size_z
 
     images: list[ome.Image] = []
     for i, pos in enumerate(settings.positions):
@@ -439,41 +555,26 @@ def _build_full_model(
                 uuid=ome.TiffData.UUID(file_name=relative_path, value=file_info.uuid),
             )
 
-        if channel_dim and channel_dim.coords:
-            # Use full channel information if
-            channels = [
-                _cast_channel(omw_channel=c, id=f"Channel:{i}:{cidx}")
-                for cidx, c in enumerate(channel_dim.coords)
-            ]
-        else:
-            channels = [ome.Channel(id=f"Channel:{i}:{c}") for c in range(size_c)]
-
-        physical_sizes = _get_physical_sizes(dims)
-        pixels = ome.Pixels(
-            id=f"Pixels:{i}",
-            dimension_order=dimension_order,
-            size_x=pixel_sizes["x"],
-            size_y=pixel_sizes["y"],
-            size_z=size_z,
-            size_c=size_c,
-            size_t=size_t,
-            **physical_sizes,
-            type=settings.dtype,
-            # big_endian=False,
-            channels=channels,
-            tiff_data_blocks=[tiff_data],
-        )
-        image = ome.Image(
-            id=f"Image:{i}",
-            name=pos.name,
-            pixels=pixels,
-            acquisition_date=datetime.now(timezone.utc),
-            stage_label=_build_stage_label(pos, dims),
-        )
-        images.append(image)
+        images.append(_build_image(ctx, pos, tiff_data, i))
 
     plates = _build_plates(settings)
     return ome_types.OME(uuid=_make_uuid(), images=images, plates=plates)
+
+
+def _build_self_contained_model(
+    ctx: _ImageContext, settings: AcquisitionSettings, info: FileInfo, pos: Position
+) -> ome_types.OME:
+    """Build a standalone single-series OME model for one position's file.
+
+    The `TiffData` carries no `UUID` child: per the OME schema that element "must be
+    used when the IFDs are located in another file", and omitting it means the IFDs
+    live in the file the OME-XML was read from.  That is what makes the file
+    independently readable.
+    """
+    tiff_data = ome.TiffData(ifd=0, plane_count=ctx.planes_per_series)
+    image = _build_image(ctx, pos, tiff_data, 0)
+    plates = _build_plates(settings, only_pos_idx=info.pos_idx)
+    return ome_types.OME(uuid=info.uuid, images=[image], plates=plates)
 
 
 VALID_ORDERS = [x.value for x in ome.Pixels_DimensionOrder]
@@ -531,11 +632,20 @@ def _get_physical_sizes(dims: list[Dimension]) -> dict:
     return output
 
 
-def _build_plates(settings: AcquisitionSettings) -> list[ome.Plate]:
+def _build_plates(
+    settings: AcquisitionSettings, only_pos_idx: int | None = None
+) -> list[ome.Plate]:
     """Build OME Plate with Wells and WellSamples linking to Images.
 
     Each position maps to a WellSample, which links to an Image via ImageRef.
     Wells are determined by unique (plate_row, plate_column) combinations.
+
+    When `only_pos_idx` is given, the plate is reduced to just the well and field
+    that this one position occupies, and its `ImageRef` points at `Image:0`.  The
+    `Plate` still reports the full row/column count, so a reader can tell which
+    well of which plate layout the file came from, but no `ImageRef` points at an
+    image living in another file.  `WellSample` keeps its original index so it
+    stays traceable to its place in the acquisition.
     """
     if not (positions := settings.positions) or not (plate := settings.plate):
         return []
@@ -546,6 +656,8 @@ def _build_plates(settings: AcquisitionSettings) -> list[ome.Plate]:
     # Group positions by well (row, column), filtering out invalid coordinates
     wells_map: dict[tuple[str, str], list[tuple[int, Position]]] = {}
     for idx, pos in enumerate(positions):
+        if only_pos_idx is not None and idx != only_pos_idx:
+            continue
         # in AcquisitionSettings._validate_plate_positions, we already warned the user
         # that positions with with plate_row/plate_column that aren't represented
         # in the plate definition will be skipped from the metadata.
@@ -555,6 +667,10 @@ def _build_plates(settings: AcquisitionSettings) -> list[ome.Plate]:
         key = (pos.plate_row, pos.plate_column)
         if key in valid_keys:
             wells_map.setdefault(key, []).append((idx, pos))
+
+    if only_pos_idx is not None and not wells_map:
+        # This position is not on the plate; emit no Plate rather than an empty one.
+        return []
 
     # Build Well objects with WellSamples
     wells: list[ome.Well] = []
@@ -566,7 +682,9 @@ def _build_plates(settings: AcquisitionSettings) -> list[ome.Plate]:
             ome.WellSample(
                 id=f"WellSample:{idx}",
                 index=idx,
-                image_ref=ome.ImageRef(id=f"Image:{idx}"),
+                image_ref=ome.ImageRef(
+                    id="Image:0" if only_pos_idx is not None else f"Image:{idx}"
+                ),
             )
             for idx, _pos in positions
         ]

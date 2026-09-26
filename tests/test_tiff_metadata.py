@@ -317,7 +317,7 @@ def test_single_file_multi_position_not_supported(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     "multi_file_metadata",
-    ["redundant", "master-tiff", "companion-file"],
+    ["redundant", "master-tiff", "companion-file", "self-contained"],
 )
 def test_prepare_meta(tmp_path: Path, multi_file_metadata: str) -> None:
     """Test prepare_metadata function with different multi-file structure modes."""
@@ -557,6 +557,14 @@ MULTI_FILE_MODES = [
     MultiFileMetadata.MASTER_TIFF,
     MultiFileMetadata.COMPANION,
 ]
+"""Modes that produce one authoritative OME document describing every position.
+
+`SELF_CONTAINED` is deliberately excluded: it produces N independent single-series
+documents, so tests that read "the" full OME do not apply to it.  Mode-agnostic
+tests use `ALL_MULTI_FILE_MODES` instead.
+"""
+
+ALL_MULTI_FILE_MODES = [*MULTI_FILE_MODES, MultiFileMetadata.SELF_CONTAINED]
 
 
 def _write_with_mode(
@@ -910,7 +918,7 @@ def test_file_structure_by_mode(tmp_path: Path, mode: MultiFileMetadata) -> None
             )
 
 
-@pytest.mark.parametrize("mode", MULTI_FILE_MODES)
+@pytest.mark.parametrize("mode", ALL_MULTI_FILE_MODES)
 def test_pixel_data_integrity(tmp_path: Path, mode: MultiFileMetadata) -> None:
     """Verify pixel data can be read back correctly."""
     import tifffile
@@ -934,6 +942,272 @@ def test_pixel_data_integrity(tmp_path: Path, mode: MultiFileMetadata) -> None:
                 data = tif.pages[z_idx].asarray()
                 assert data.shape == (32, 32)
                 assert np.all(data == expected_value)
+
+
+# ---------------------------------------------------------------------------
+# self-contained mode
+# ---------------------------------------------------------------------------
+
+SELF_CONTAINED = MultiFileMetadata.SELF_CONTAINED
+
+
+def test_self_contained_each_file_describes_only_itself(tmp_path: Path) -> None:
+    """Each file holds exactly its own single series, with no sibling references.
+
+    The absent `TiffData/UUID` is the whole point: per the OME schema that element
+    "must be used when the IFDs are located in another file", so omitting it means
+    the IFDs are in *this* file.
+    """
+    dimensions = [
+        Dimension(name="p", type="position", coords=["Pos0", "Pos1", "Pos2"]),
+        Dimension(name="c", count=2, type="channel"),
+        Dimension(name="y", count=32, type="space"),
+        Dimension(name="x", count=32, type="space"),
+    ]
+    _write_with_mode(tmp_path, dimensions, SELF_CONTAINED)
+
+    tiff_files = sorted(tmp_path.rglob("*.ome.tiff"))
+    assert len(tiff_files) == 3
+    # no companion file is produced
+    assert not list(tmp_path.rglob("*.ome"))
+
+    for pos_idx, path in enumerate(tiff_files):
+        ome = from_tiff(str(path))
+        # exactly one image, always numbered 0 within its own document
+        assert len(ome.images) == 1
+        image = ome.images[0]
+        assert image.id == "Image:0"
+        assert image.pixels.id == "Pixels:0"
+        assert image.name == f"Pos{pos_idx}"
+        # it is not a BinaryOnly stub, and it points at no other file
+        assert ome.binary_only is None
+        assert ome.uuid is not None
+        for tiff_data in image.pixels.tiff_data_blocks:
+            assert tiff_data.uuid is None
+        # each file gets its own root UUID
+        assert image.pixels.size_c == 2
+
+    uuids = {from_tiff(str(p)).uuid for p in tiff_files}
+    assert len(uuids) == 3
+
+
+def test_self_contained_files_survive_sibling_deletion(tmp_path: Path) -> None:
+    """A file stays fully readable when its siblings are removed.
+
+    This is the behaviour the mode exists for: in the reference-based modes a
+    reader resolves `TiffData/UUID` across files, so removing one breaks the rest.
+    """
+    import tifffile
+
+    dimensions = [
+        Dimension(name="p", type="position", coords=["Pos0", "Pos1", "Pos2"]),
+        Dimension(name="z", count=2, type="space"),
+        Dimension(name="y", count=32, type="space"),
+        Dimension(name="x", count=32, type="space"),
+    ]
+    _write_with_mode(tmp_path, dimensions, SELF_CONTAINED)
+
+    tiff_files = sorted(tmp_path.rglob("*.ome.tiff"))
+    middle = tiff_files[1]
+    middle.unlink()
+
+    for path in (tiff_files[0], tiff_files[2]):
+        ome = from_tiff(str(path))
+        # nothing in the metadata refers to a file that is no longer there
+        referenced = [
+            td.uuid.file_name
+            for img in ome.images
+            for td in img.pixels.tiff_data_blocks
+            if td.uuid is not None and td.uuid.file_name
+        ]
+        assert referenced == []
+        # and the pixels still read without the sibling present
+        with tifffile.TiffFile(str(path)) as tif:
+            assert len(tif.pages) == 2
+            assert tif.pages[0].asarray().shape == (32, 32)
+
+
+def test_self_contained_frame_metadata_lands_in_own_file(tmp_path: Path) -> None:
+    """Per-frame planes are written to the file that holds the frame."""
+    dimensions = [
+        Dimension(name="p", type="position", coords=["Pos0", "Pos1"]),
+        Dimension(name="t", count=2, type="time"),
+        Dimension(name="y", count=8, type="space"),
+        Dimension(name="x", count=8, type="space"),
+    ]
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "test.ome.tiff",
+        dimensions=dimensions,
+        dtype="uint16",
+        overwrite=True,
+        format={
+            "name": "ome-tiff",
+            "multi_file_metadata": SELF_CONTAINED.value,
+            "prefer_single_file": "never",
+        },
+    )
+    with create_stream(settings) as stream:
+        for i in range(4):
+            stream.append(
+                np.full((8, 8), i, dtype=np.uint16),
+                frame_metadata={"exposure_time": float(i), "tag": f"frame{i}"},
+            )
+
+    tiff_files = sorted(tmp_path.rglob("*.ome.tiff"))
+    assert len(tiff_files) == 2
+    for pos_idx, path in enumerate(tiff_files):
+        ome = from_tiff(str(path))
+        planes = ome.images[0].pixels.planes
+        assert len(planes) == 2
+        # position 0 wrote frames 0,1 and position 1 wrote frames 2,3
+        expected = [float(pos_idx * 2), float(pos_idx * 2 + 1)]
+        assert [p.exposure_time for p in planes] == expected
+        # the unstructured part is referenced by its plane
+        assert all(p.annotation_refs for p in planes)
+
+
+def test_self_contained_plate_reduced_to_own_well(tmp_path: Path) -> None:
+    """Plate layout is kept, but only for the well/field the file contains."""
+    dimensions = [
+        Dimension(
+            name="p",
+            type="position",
+            coords=[
+                Position(name="A1_f0", plate_row="A", plate_column="1"),
+                Position(name="A1_f1", plate_row="A", plate_column="1"),
+                Position(name="B2_f0", plate_row="B", plate_column="2"),
+            ],
+        ),
+        Dimension(name="y", count=32, type="space"),
+        Dimension(name="x", count=32, type="space"),
+    ]
+    plate = Plate(name="Test Plate", row_names=["A", "B"], column_names=["1", "2"])
+    _write_with_mode(tmp_path, dimensions, SELF_CONTAINED, plate=plate)
+
+    tiff_files = sorted(tmp_path.rglob("*.ome.tiff"))
+    expected = [(0, 0, 0), (0, 0, 1), (1, 1, 2)]  # (row, column, well_sample_index)
+    for path, (row, col, sample_idx) in zip(tiff_files, expected, strict=True):
+        ome = from_tiff(str(path))
+        assert len(ome.plates) == 1
+        plate_obj = ome.plates[0]
+        # the full layout is retained so the well is interpretable
+        assert plate_obj.name == "Test Plate"
+        assert (plate_obj.rows, plate_obj.columns) == (2, 2)
+        # but only this file's own well/field is present
+        assert len(plate_obj.wells) == 1
+        well = plate_obj.wells[0]
+        assert (well.row, well.column) == (row, col)
+        assert len(well.well_samples) == 1
+        sample = well.well_samples[0]
+        assert sample.index == sample_idx
+        # and it refers to the image in *this* file
+        assert sample.image_ref.id == "Image:0"
+        assert ome.images[0].id == "Image:0"
+
+
+def test_self_contained_plate_omitted_for_offplate_position(tmp_path: Path) -> None:
+    """A position outside the plate definition gets no Plate, not an empty one."""
+    dimensions = [
+        Dimension(
+            name="p",
+            type="position",
+            coords=[
+                Position(name="A1", plate_row="A", plate_column="1"),
+                # row "Z" is not in the plate definition, so this position is
+                # skipped from plate metadata (settings only warns about it)
+                Position(name="offplate", plate_row="Z", plate_column="1"),
+            ],
+        ),
+        Dimension(name="y", count=32, type="space"),
+        Dimension(name="x", count=32, type="space"),
+    ]
+    plate = Plate(name="Test Plate", row_names=["A", "B"], column_names=["1", "2"])
+    with pytest.warns(UserWarning, match="not in the plate definition"):
+        _write_with_mode(tmp_path, dimensions, SELF_CONTAINED, plate=plate)
+
+    tiff_files = sorted(tmp_path.rglob("*.ome.tiff"))
+    assert len(from_tiff(str(tiff_files[0])).plates) == 1
+    assert from_tiff(str(tiff_files[1])).plates == []
+
+
+@pytest.mark.parametrize("mode", [MultiFileMetadata.REDUNDANT, SELF_CONTAINED])
+def test_truncated_position_corrects_its_own_image(
+    tmp_path: Path, mode: MultiFileMetadata
+) -> None:
+    """A short-written position corrects the `Image` that its own file holds.
+
+    `p` is the outer dimension, so writing 5 of 8 frames leaves Pos0 complete and
+    Pos1 truncated to a single timepoint.  In redundant mode every file carries
+    every `Image`, so the correction has to land on the one that file actually
+    contains, not on `Image:0`.
+    """
+    dimensions = [
+        Dimension(name="p", type="position", coords=["Pos0", "Pos1"]),
+        Dimension(name="t", count=4, type="time"),
+        Dimension(name="y", count=8, type="space"),
+        Dimension(name="x", count=8, type="space"),
+    ]
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "trunc.ome.tiff",
+        dimensions=dimensions,
+        dtype="uint16",
+        overwrite=True,
+        format={
+            "name": "ome-tiff",
+            "multi_file_metadata": mode.value,
+            "prefer_single_file": "never",
+        },
+    )
+    with create_stream(settings) as stream:
+        for _ in range(5):
+            stream.append(np.zeros((8, 8), dtype=np.uint16))
+
+    tiff_files = sorted(tmp_path.rglob("*.ome.tiff"))
+    assert len(tiff_files) == 2
+
+    def own_image(path: Path, pos_idx: int) -> Any:
+        ome = from_tiff(str(path))
+        # self-contained files hold only their own image, at index 0
+        image = ome.images[0 if mode is SELF_CONTAINED else pos_idx]
+        assert image.name == f"Pos{pos_idx}"
+        return image
+
+    # Pos0 ran to completion
+    pos0 = own_image(tiff_files[0], 0)
+    assert pos0.pixels.size_t == 4
+    assert pos0.pixels.tiff_data_blocks[0].plane_count == 4
+
+    # Pos1 stopped after one timepoint, and says so in its own file
+    pos1 = own_image(tiff_files[1], 1)
+    assert pos1.pixels.size_t == 1
+    assert pos1.pixels.tiff_data_blocks[0].plane_count == 1
+
+
+def test_self_contained_stage_label_and_physical_sizes(tmp_path: Path) -> None:
+    """Per-position StageLabel and physical sizes survive the per-file split."""
+    dimensions = [
+        Dimension(
+            name="p",
+            type="position",
+            coords=[
+                Position(name="Pos0", x_coord=10.0, y_coord=20.0, z_coord=30.0),
+                Position(name="Pos1", x_coord=40.0, y_coord=50.0, z_coord=60.0),
+            ],
+        ),
+        Dimension(name="y", count=32, type="space", scale=0.5, unit="micrometer"),
+        Dimension(name="x", count=32, type="space", scale=0.5, unit="micrometer"),
+    ]
+    _write_with_mode(tmp_path, dimensions, SELF_CONTAINED)
+
+    tiff_files = sorted(tmp_path.rglob("*.ome.tiff"))
+    expected = [(10.0, 20.0, 30.0), (40.0, 50.0, 60.0)]
+    for path, (x, y, z) in zip(tiff_files, expected, strict=True):
+        image = from_tiff(str(path)).images[0]
+        assert image.stage_label is not None
+        assert (image.stage_label.x, image.stage_label.y) == (x, y)
+        assert image.stage_label.z == z
+        assert image.pixels.physical_size_x == 0.5
+        assert image.pixels.physical_size_y == 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -1024,7 +1298,7 @@ def test_tiff_global_metadata_replace_is_position_stable(
     assert len(ns_c) == 1 and _decode_map(ns_c[0]) == {"v": 3}
 
 
-@pytest.mark.parametrize("mode", MULTI_FILE_MODES)
+@pytest.mark.parametrize("mode", ALL_MULTI_FILE_MODES)
 def test_tiff_global_metadata_multi_file_modes(
     tmp_path: Path, tiff_backend: str, mode: MultiFileMetadata
 ) -> None:
@@ -1056,7 +1330,7 @@ def test_tiff_global_metadata_multi_file_modes(
         _anns_by_ns(from_tiff(str(d / f"{mode.value}_p{p:03d}.ome.tiff")), "ns")
         for p in range(2)
     ]
-    if mode == MultiFileMetadata.REDUNDANT:
+    if mode in (MultiFileMetadata.REDUNDANT, MultiFileMetadata.SELF_CONTAINED):
         for anns in per_pos:
             assert len(anns) == 1 and _decode_map(anns[0]) == summary
     elif mode == MultiFileMetadata.MASTER_TIFF:
@@ -1151,7 +1425,7 @@ def test_tiff_global_metadata_post_close_single_file(
     assert len(ns_b) == 1 and _decode_map(ns_b[0]) == {"y": 2}
 
 
-@pytest.mark.parametrize("mode", MULTI_FILE_MODES)
+@pytest.mark.parametrize("mode", ALL_MULTI_FILE_MODES)
 def test_tiff_global_metadata_post_close_multi_file_modes(
     tmp_path: Path, tiff_backend: str, mode: MultiFileMetadata
 ) -> None:
@@ -1188,7 +1462,7 @@ def test_tiff_global_metadata_post_close_multi_file_modes(
         _anns_by_ns(from_tiff(str(d / f"{mode.value}_p{p:03d}.ome.tiff")), "ns")
         for p in range(2)
     ]
-    if mode == MultiFileMetadata.REDUNDANT:
+    if mode in (MultiFileMetadata.REDUNDANT, MultiFileMetadata.SELF_CONTAINED):
         for anns in per_pos:
             assert len(anns) == 1 and _decode_map(anns[0]) == summary
     elif mode == MultiFileMetadata.MASTER_TIFF:

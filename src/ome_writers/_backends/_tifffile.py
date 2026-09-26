@@ -93,10 +93,8 @@ class PositionManager:
             return
 
         # Update dimension sizes and plane count based on actual frames written
-        images = self.metadata_mirror.model.images
-        if self.write_state.frames_written and index_dims and images:
-            pixels = images[0].pixels
-
+        pixels = self.metadata_mirror.own_pixels()
+        if self.write_state.frames_written and index_dims and pixels is not None:
             # Update the outermost dimension's size based on frames written
             # This handles both unbounded dims and incomplete bounded dims
             if index_dims:
@@ -291,7 +289,7 @@ class TiffBackend(ArrayBackend):
             model.structured_annotations = structured = ome.StructuredAnnotations()
 
         map_annotations = structured.map_annotations
-        if images := model.images:
+        if (own_pixels := mirror.own_pixels()) is not None:
             # {"the_z": 0, "the_c": 1, ...}
             plane_kwargs = {
                 f"the_{k}": v for k, v in zip(self._index_keys, index, strict=False)
@@ -315,8 +313,9 @@ class TiffBackend(ArrayBackend):
                 )
                 map_annotations.append(annotation)
                 annotation_refs.append(ome.AnnotationRef(id=annotation.id))
-            planes = images[position_index].pixels.planes
-            planes.append(ome.Plane(**plane_kwargs, annotation_refs=annotation_refs))
+            own_pixels.planes.append(
+                ome.Plane(**plane_kwargs, annotation_refs=annotation_refs)
+            )
             mirror.mark_dirty()
 
     def _global_target_pos_idxs(self) -> list[int]:
@@ -325,7 +324,8 @@ class TiffBackend(ArrayBackend):
         Across every `multi_file_metadata` mode, the "full OME" mirrors are
         exactly the files that should carry global `MapAnnotation`s: the
         companion in companion-file mode, the master in master-tiff, the
-        sole file in single-file, and every file in redundant mode.
+        sole file in single-file, and every file in redundant and
+        self-contained modes.
         `prepare_metadata` marks stub mirrors by setting
         ``model.binary_only``; full-OME mirrors leave it unset.
         """
@@ -348,9 +348,9 @@ class TiffBackend(ArrayBackend):
 
         Where the annotation lands on disk is driven by the OME-TIFF
         `multi_file_metadata` mode: single-file and `master-tiff` write to one file,
-        `companion-file` writes to the companion, and `redundant` writes a copy into
-        every per-position TIFF (matching that mode's "full OME in every file"
-        guarantee).
+        `companion-file` writes to the companion, and `redundant` and
+        `self-contained` write a copy into every per-position TIFF (matching those
+        modes' "full OME in every file" guarantee).
 
         Can be called any time after `prepare()`, including after `close()`.
         Pre-close the update is deferred to `finalize()` (`tiffcomment` cannot

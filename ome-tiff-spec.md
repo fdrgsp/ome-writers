@@ -534,6 +534,17 @@ this metadata across files.
 | 2b   | Multi-file, master TIFF     | N           | 1                 | N-1             |
 | 2c   | Multi-file, companion file  | N+1         | 1                 | N               |
 
+Note that in all three multi-file modes the dataset is described by a *single*
+logical OME-XML document, so every file's `TiffData` elements reference sibling
+files by UUID. Removing or relocating one file therefore invalidates the others.
+
+`ome_writers` offers one further arrangement, `multi_file_metadata='self-contained'`,
+which is deliberately *not* one of the modes above: rather than one N-series
+dataset it writes N independent Mode 1 datasets into a directory, each describing
+only its own position and referencing no other file. Each file can be opened,
+moved, or deleted on its own, at the cost of readers no longer seeing the
+positions as a single grouped dataset.
+
 ### Minimal XML Examples
 
 All examples assume a simple 2-channel, 2-timepoint dataset (4 planes total).

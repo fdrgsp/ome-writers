@@ -712,7 +712,9 @@ class OmeTiffFormat(_BaseModel):
         "(not yet supported - will raise `NotImplementedError` when num_positions > 1)."
         "\n- `'never'`: Always use multi-file structure, even for single position.",
     )
-    multi_file_metadata: Literal["redundant", "master-tiff", "companion-file"] = Field(
+    multi_file_metadata: Literal[
+        "redundant", "master-tiff", "companion-file", "self-contained"
+    ] = Field(
         default="redundant",
         description=(
             "Controls how metadata is arranged for multi-position acquisitions. "
@@ -720,6 +722,12 @@ class OmeTiffFormat(_BaseModel):
             "\n- `'redundant'`: Each file has complete OME-XML metadata."
             "\n- `'master-tiff'`: The first file has full OME-XML, others have `BinData` references."  # noqa TC501
             "\n- `'companion-file'`: All TIFFs have `BinData` only, full OME-XML in separate companion file."  # noqa TC501
+            "\n- `'self-contained'`: Each file describes *only its own* position, with"
+            " no references to sibling files, so any file can be opened on its own"
+            " (and files can be moved or deleted independently). The trade-off is"
+            " that readers see N independent single-series images rather than one"
+            " N-series dataset, and cross-position `Plate` layout is reduced to the"
+            " single well/field that each file contains."
         ),
     )
     companion_file: str = Field(
