@@ -135,6 +135,11 @@ class TiffBackend(ArrayBackend):
         self._dtype: str = ""
         self._frame_metadata: dict[int, list[dict[str, Any]]] = {}
         self._writer_threads: tuple[WriterThread, ...] = ()
+        # position index -> (mirror holding its Image, index of that Image).
+        # Not always the position's own file: a BinaryOnly stub has no Image to
+        # hang a Plane off, so its per-frame metadata belongs in the master or
+        # companion document instead.  See _build_plane_targets.
+        self._plane_targets: dict[int, tuple[OmeXMLMirror, int]] = {}
 
     def is_incompatible(self, settings: AcquisitionSettings) -> Literal[False] | str:
         """Check if settings are compatible with TIFF backend."""
@@ -222,6 +227,34 @@ class TiffBackend(ArrayBackend):
         for writer in self._writer_threads:
             writer.start()
 
+        self._plane_targets = self._build_plane_targets()
+
+    def _build_plane_targets(self) -> dict[int, tuple[OmeXMLMirror, int]]:
+        """Map each position to the mirror and `Image` index that describe it.
+
+        A `Plane` is a child of `Pixels`, so per-frame metadata can only be stored
+        where that position's `Image` actually lives. In `redundant` and
+        `self-contained` that is the position's own file, but a `master-tiff` stub
+        or a `companion-file` TIFF holds no `Image` at all -- its metadata belongs
+        in the one full-OME document, at the index matching its position.
+        """
+        full_mirrors = [
+            mgr.metadata_mirror
+            for mgr in self._position_managers.values()
+            if mgr.metadata_mirror.model.binary_only is None
+        ]
+        targets: dict[int, tuple[OmeXMLMirror, int]] = {}
+        for pos_idx, manager in self._position_managers.items():
+            mirror = manager.metadata_mirror
+            if mirror.model.binary_only is None:
+                # describes itself; its own image_index already points at it
+                targets[pos_idx] = (mirror, mirror.image_index)
+            elif len(full_mirrors) == 1:
+                # a stub: its Image lives in the single authoritative document,
+                # where images are ordered by position
+                targets[pos_idx] = (full_mirrors[0], pos_idx)
+        return targets
+
     def _writer_for_position(self, position_index: int) -> WriterThread:
         """Return the stable pool worker assigned to ``position_index``."""
         if not self._writer_threads:  # pragma: no cover
@@ -283,13 +316,19 @@ class TiffBackend(ArrayBackend):
             self._frame_metadata[position_index] = []
         # self._frame_metadata[position_index].append(meta_with_idx)
 
-        mirror = self._position_managers[position_index].metadata_mirror
+        target = self._plane_targets.get(position_index)
+        if target is None:  # pragma: no cover
+            return
+        mirror, image_index = target
         model = mirror.model
-        if not (structured := model.structured_annotations):
-            model.structured_annotations = structured = ome.StructuredAnnotations()
-
-        map_annotations = structured.map_annotations
-        if (own_pixels := mirror.own_pixels()) is not None:
+        images = model.images
+        if 0 <= image_index < len(images):
+            own_pixels = images[image_index].pixels
+            # The annotation must land in the same document as the Plane that
+            # references it, or the AnnotationRef dangles.
+            if not (structured := model.structured_annotations):
+                model.structured_annotations = structured = ome.StructuredAnnotations()
+            map_annotations = structured.map_annotations
             # {"the_z": 0, "the_c": 1, ...}
             plane_kwargs = {
                 f"the_{k}": v for k, v in zip(self._index_keys, index, strict=False)

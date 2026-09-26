@@ -1680,3 +1680,68 @@ def test_binary_only_reference_survives_moving_the_directory(
         ome = from_tiff(str(moved / path.name))
         assert ome.binary_only is not None
         assert (moved / ome.binary_only.metadata_file).exists()
+
+
+@pytest.mark.parametrize("mode", ALL_MULTI_FILE_MODES)
+def test_frame_metadata_survives_every_multi_file_mode(
+    tmp_path: Path, mode: MultiFileMetadata
+) -> None:
+    """Per-frame planes are recorded whichever file holds the position's `Image`.
+
+    A `Plane` is a child of `Pixels`, so it can only live where the position's
+    `Image` does. For `master-tiff` and `companion-file` that is not the file the
+    frame was written to, and routing planes to the frame's own file silently
+    dropped them for every position but the master's.
+    """
+    npos, nt = 3, 2
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "frames.ome.tiff",
+        dimensions=[
+            Dimension(
+                name="p", type="position", coords=[f"Pos{i}" for i in range(npos)]
+            ),
+            Dimension(name="t", count=nt, type="time"),
+            Dimension(name="y", count=8, type="space"),
+            Dimension(name="x", count=8, type="space"),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={
+            "name": "ome-tiff",
+            "multi_file_metadata": mode.value,
+            "prefer_single_file": "never",
+        },
+    )
+    with create_stream(settings) as stream:
+        for i in range(npos * nt):
+            stream.append(
+                np.zeros((8, 8), dtype=np.uint16),
+                frame_metadata={"delta_t": float(i), "tag": f"frame{i}"},
+            )
+
+    out_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
+    # collect every Image that carries planes, across whichever files hold them
+    by_name: dict[str, list[float]] = {}
+    dangling = 0
+    for path in sorted(out_dir.iterdir()):
+        if path.suffix in (".tiff", ".tif"):
+            ome = from_tiff(str(path))
+        else:
+            ome = from_xml(path.read_text())
+        sa = ome.structured_annotations
+        ann_ids = {a.id for a in (sa.map_annotations if sa else [])}
+        for image in ome.images:
+            if planes := image.pixels.planes:
+                assert image.name is not None
+                by_name.setdefault(image.name, []).extend(
+                    p.delta_t or 0.0 for p in planes
+                )
+                for plane in planes:
+                    dangling += sum(r.id not in ann_ids for r in plane.annotation_refs)
+
+    # every position's frames are present, on its own Image, in acquisition order
+    assert by_name == {
+        f"Pos{p}": [float(p * nt + t) for t in range(nt)] for p in range(npos)
+    }
+    # and each plane's MapAnnotation lives in the same document as the plane
+    assert dangling == 0
