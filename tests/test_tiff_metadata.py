@@ -1745,3 +1745,58 @@ def test_frame_metadata_survives_every_multi_file_mode(
     }
     # and each plane's MapAnnotation lives in the same document as the plane
     assert dangling == 0
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Upstream tifffile bug (present through 2026.9.20): "
+        "TiffPageSeries.dataoffset checks that a series' pages are byte-contiguous "
+        "but not that they live in the same file. In a grouped multi-file OME-TIFF "
+        "each position's pages ARE contiguous within its own file, so a non-None "
+        "offset is computed and TiffFile.asarray() then reads it from the handle "
+        "that happens to be open -- returning another position's pixels. Only "
+        "uncompressed data is affected, since compression makes pages non-final "
+        "and disables that fast path. Nothing can be fixed writer-side: the "
+        "OME-XML is correct and schema-valid, and 'self-contained' avoids the "
+        "situation entirely by never spanning files. When this test starts "
+        "passing, tifffile has fixed it and the marker should be removed."
+    ),
+)
+def test_grouped_multifile_reads_back_the_right_position(tmp_path: Path) -> None:
+    """Every series of a linked multi-file set must read its own position."""
+    import tifffile
+
+    npos, nz = 3, 2
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "grouped.ome.tiff",
+        dimensions=[
+            Dimension(
+                name="p", type="position", coords=[f"Pos{i}" for i in range(npos)]
+            ),
+            Dimension(name="z", count=nz, type="space"),
+            Dimension(name="y", count=8, type="space"),
+            Dimension(name="x", count=8, type="space"),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={
+            "name": "ome-tiff",
+            "multi_file_metadata": MultiFileMetadata.REDUNDANT.value,
+            "prefer_single_file": "never",
+        },
+    )
+    # position p gets pixel value p, so a misread is unambiguous
+    with create_stream(settings) as stream:
+        for p in range(npos):
+            for _ in range(nz):
+                stream.append(np.full((8, 8), p, dtype=np.uint16))
+
+    out_dir = next(path for path in tmp_path.iterdir() if path.is_dir())
+    entry = sorted(out_dir.glob("*.ome.tiff"))[0]
+    with tifffile.TiffFile(entry) as tif:
+        got = {
+            series.name: sorted(int(v) for v in np.unique(series.asarray()))
+            for series in tif.series
+        }
+    assert got == {f"Pos{p}": [p] for p in range(npos)}
