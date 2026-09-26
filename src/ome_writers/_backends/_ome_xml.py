@@ -261,7 +261,11 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
             model=full_model,
         )
 
-        # Other files get BinaryOnly
+        # Other files get BinaryOnly.  The reference is the master's *name*, not
+        # its path: every file of the set lives in one directory, and an absolute
+        # path would be baked in at write time, so merely renaming or moving that
+        # directory would orphan every stub.
+        master_ref = Path(master_info.path).name
         for info in file_infos[1:]:
             mirrors[info.path] = OmeXMLMirror(
                 path=info.path,
@@ -269,7 +273,7 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
                 model=ome_types.OME(
                     uuid=info.uuid,
                     binary_only=BinaryOnly(
-                        metadata_file=master_info.path,
+                        metadata_file=master_ref,
                         uuid=master_info.uuid,
                     ),
                 ),
@@ -290,7 +294,9 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
             model=full_model,
         )
 
-        # All TIFF files get BinaryOnly
+        # All TIFF files get BinaryOnly, referring to the companion by name so the
+        # directory stays relocatable (see the master-tiff branch above).
+        companion_ref = Path(companion_path).name
         for info in file_infos:
             mirrors[info.path] = OmeXMLMirror(
                 path=info.path,
@@ -298,7 +304,7 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
                 model=ome_types.OME(
                     uuid=info.uuid,
                     binary_only=BinaryOnly(
-                        metadata_file=companion_path,
+                        metadata_file=companion_ref,
                         uuid=companion_uuid,
                     ),
                 ),

@@ -1638,3 +1638,45 @@ def test_position_filename_suffixes_are_unique() -> None:
     for positions in cases:
         suffixes = _suffixes(*positions)
         assert len(set(suffixes)) == len(suffixes), suffixes
+
+
+@pytest.mark.parametrize(
+    "mode", [MultiFileMetadata.MASTER_TIFF, MultiFileMetadata.COMPANION]
+)
+def test_binary_only_reference_survives_moving_the_directory(
+    tmp_path: Path, mode: MultiFileMetadata
+) -> None:
+    """`BinaryOnly.metadata_file` must be relative, not an absolute write-time path.
+
+    Every file of the set lives in one directory, so the reference is just a
+    name. Recording the absolute path instead would orphan every stub as soon as
+    the acquisition folder was renamed or moved.
+    """
+    dimensions = [
+        Dimension(name="p", type="position", coords=["Pos0", "Pos1"]),
+        Dimension(name="y", count=16, type="space"),
+        Dimension(name="x", count=16, type="space"),
+    ]
+    _write_with_mode(tmp_path, dimensions, mode)
+
+    out_dir = next(p for p in tmp_path.iterdir() if p.is_dir())
+    stubs = [
+        (path, ome)
+        for path in sorted(out_dir.glob("*.ome.tiff"))
+        if (ome := from_tiff(str(path))).binary_only is not None
+    ]
+    assert stubs, "this mode must produce at least one BinaryOnly stub"
+
+    for _, ome in stubs:
+        assert ome.binary_only is not None
+        ref = PathlibPath(ome.binary_only.metadata_file)
+        assert not ref.is_absolute(), f"{ref} must not be an absolute path"
+        assert str(ref) == ref.name, f"{ref} must be a bare filename"
+
+    # the whole point: the link still resolves after the directory is renamed
+    moved = out_dir.parent / "renamed"
+    out_dir.rename(moved)
+    for path, _ in stubs:
+        ome = from_tiff(str(moved / path.name))
+        assert ome.binary_only is not None
+        assert (moved / ome.binary_only.metadata_file).exists()
