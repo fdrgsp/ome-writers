@@ -730,10 +730,12 @@ class OmeTiffFormat(_BaseModel):
             " single well/field that each file contains."
         ),
     )
-    companion_file: str = Field(
-        default="companion.ome",
+    companion_file: str | None = Field(
+        default=None,
         description="Filename to use for OME-XML companion file when using "
-        "`'companion-file'` structure.",
+        "`'companion-file'` structure.  Defaults to `'{stem}.companion.ome'`, "
+        "where `{stem}` is the name of the output directory.  Bio-Formats only "
+        "recognizes companion files ending in `.companion.ome`.",
     )
 
     def get_output_path(self, root_path: str, *, num_positions: int = 1) -> str:
