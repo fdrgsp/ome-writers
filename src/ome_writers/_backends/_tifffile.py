@@ -55,7 +55,6 @@ class PositionManager:
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
-        self._metadata_dirty: bool = False
 
     def update_metadata(self, metadata: ome.OME, flush: bool = False) -> None:
         """Update cached metadata and mark as dirty.  Optionally flush to file."""
@@ -97,14 +96,10 @@ class PositionManager:
         if self.write_state.frames_written and index_dims and pixels is not None:
             # Update the outermost dimension's size based on frames written
             # This handles both unbounded dims and incomplete bounded dims
-            if index_dims:
-                first, *inner = index_dims
-                # Calculate actual size of outermost dimension
-                inner_prod = math.prod([d.count or 1 for d in inner])
-                actual_outer_size = max(
-                    1, self.write_state.frames_written // inner_prod
-                )
-                setattr(pixels, f"size_{first.name.lower()}", actual_outer_size)
+            first, *inner = index_dims
+            inner_prod = math.prod(d.count or 1 for d in inner)
+            actual_outer_size = max(1, self.write_state.frames_written // inner_prod)
+            setattr(pixels, f"size_{first.name.lower()}", actual_outer_size)
 
             # Update plane count
             if data_blocks := pixels.tiff_data_blocks:
@@ -133,7 +128,6 @@ class TiffBackend(ArrayBackend):
         self._position_managers: dict[int, PositionManager] = {}
         self._storage_dims: tuple[Dimension, ...] | None = None
         self._dtype: str = ""
-        self._frame_metadata: dict[int, list[dict[str, Any]]] = {}
         self._writer_threads: tuple[WriterThread, ...] = ()
         # position index -> (mirror holding its Image, index of that Image).
         # Not always the position's own file: a BinaryOnly stub has no Image to
@@ -312,10 +306,6 @@ class TiffBackend(ArrayBackend):
         index: tuple[int, ...],
         frame_metadata: dict[str, Any],
     ) -> None:
-        if position_index not in self._frame_metadata:
-            self._frame_metadata[position_index] = []
-        # self._frame_metadata[position_index].append(meta_with_idx)
-
         target = self._plane_targets.get(position_index)
         if target is None:  # pragma: no cover
             return
@@ -344,7 +334,6 @@ class TiffBackend(ArrayBackend):
                 else:
                     extra_kwargs[key] = value
 
-            # meta_with_idx = {**frame_metadata, "storage_index": index}
             annotation_refs: list[ome.AnnotationRef] = []
             if extra_kwargs:
                 annotation = ome.MapAnnotation(

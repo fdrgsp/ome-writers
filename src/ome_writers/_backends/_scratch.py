@@ -96,6 +96,7 @@ class ScratchBackend(ArrayBackend):
         self._settings_dump = {
             "version": __version__,
             **settings.model_dump(mode="json", exclude_unset=True),
+            "dtype": settings.dtype,
         }
 
         # Check memory bound for pure in-memory mode
@@ -110,11 +111,8 @@ class ScratchBackend(ArrayBackend):
                     self._root_path = Path(
                         tempfile.mkdtemp(prefix="ome_scratch_", dir=fmt.spill_dir)
                     )
-                    # Delete the spill directory as soon as this backend is
-                    # garbage collected (or at exit, whichever comes first).
-                    # The finalizer holds the arrays list (never rebound) rather
-                    # than self, so it can release the memmaps before deleting
-                    # their files (required on Windows).
+                    # Keep no reference to self; release memmaps before deletion
+                    # so the finalizer also works on Windows.
                     weakref.finalize(
                         self, _remove_spill_dir, self._arrays, self._root_path
                     )
@@ -202,20 +200,15 @@ class ScratchBackend(ArrayBackend):
         n_positions = len(self._logical_shapes)
         return [_ScratchArrayView(self, i) for i in range(n_positions)]
 
-    def _reopen_arrays(self) -> Sequence[ArrayLike]:
-        """Re-open memmap files read-only from disk after finalization."""
+    def _reopen_array(self, pos_idx: int) -> np.memmap:
+        """Reopen only the requested position after finalization."""
         assert self._root_path is not None
-        manifest = json.loads((self._root_path / MANIFEST).read_text())
-        dtype = np.dtype(manifest["dtype"])
-        return [
-            np.memmap(
-                self._root_path / f"pos_{i}.dat",
-                dtype=dtype,
-                mode="r",
-                shape=tuple(shape),
-            )
-            for i, shape in enumerate(manifest["position_shapes"])
-        ]
+        return np.memmap(
+            self._root_path / f"pos_{pos_idx}.dat",
+            dtype=self._settings_dump["dtype"],
+            mode="r",
+            shape=tuple(self._logical_shapes[pos_idx]),
+        )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -322,8 +315,7 @@ class _ScratchArrayView:
     def dtype(self) -> np.dtype:
         if self._backend._arrays:
             return self._backend._arrays[self._pos_idx].dtype
-        # After finalize, arrays are cleared; re-open to get dtype.
-        return self._backend._reopen_arrays()[self._pos_idx].dtype
+        return np.dtype(self._backend._settings_dump["dtype"])
 
     def __setitem__(self, key: Any, value: Any) -> None:
         raise TypeError("_ScratchArrayView is read-only")
@@ -333,7 +325,7 @@ class _ScratchArrayView:
             # After finalize, arrays are cleared; delegate to re-opened view.
             # Copy so callers never keep the file mapped, which would block
             # deleting the spill directory on Windows.
-            result = self._backend._reopen_arrays()[self._pos_idx][key]
+            result = self._backend._reopen_array(self._pos_idx)[key]
             if isinstance(result, np.ndarray):
                 result = np.array(result)
                 result.flags.writeable = False

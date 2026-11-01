@@ -10,6 +10,7 @@ import pytest
 
 from ome_writers import (
     AcquisitionSettings,
+    Dimension,
     Position,
     create_stream,
     dims_from_standard_axes,
@@ -425,3 +426,29 @@ def test_spill_dir_and_cleanup_on_release(tmp_path: Path) -> None:
     del stream, view, result
     gc.collect()
     assert not spill_root.exists()
+
+
+def test_finalized_scratch_opens_only_requested_position(tmp_path: Path) -> None:
+    from unittest.mock import patch
+
+    settings = AcquisitionSettings(
+        root_path=str(tmp_path / "scratch"),
+        dimensions=[
+            Dimension(name="p", type="position", coords=["a", "b", "c"]),
+            Dimension(name="y", type="space", count=4),
+            Dimension(name="x", type="space", count=4),
+        ],
+        format="scratch",
+        dtype="uint16",
+    )
+    with create_stream(settings) as stream:
+        for value in range(3):
+            stream.append(np.full((4, 4), value, dtype=settings.dtype))
+
+    arrays = stream._backend.get_arrays()
+    with patch("ome_writers._backends._scratch.np.memmap", wraps=np.memmap) as mmap:
+        assert arrays[1].dtype == np.dtype(settings.dtype)
+        mmap.assert_not_called()
+        np.testing.assert_array_equal(arrays[1][:], np.full((4, 4), 1))
+        mmap.assert_called_once()
+        assert mmap.call_args.args[0].name == "pos_1.dat"

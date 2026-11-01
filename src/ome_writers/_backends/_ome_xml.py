@@ -663,13 +663,13 @@ def _build_plates(
 
     # Group positions by well (row, column), filtering out invalid coordinates
     wells_map: dict[tuple[str, str], list[tuple[int, Position]]] = {}
-    for idx, pos in enumerate(positions):
-        if only_pos_idx is not None and idx != only_pos_idx:
-            continue
-        # in AcquisitionSettings._validate_plate_positions, we already warned the user
-        # that positions with with plate_row/plate_column that aren't represented
-        # in the plate definition will be skipped from the metadata.
-        # So here we just skip them here silently.
+    selected = (
+        enumerate(positions)
+        if only_pos_idx is None
+        else ((only_pos_idx, positions[only_pos_idx]),)
+    )
+    for idx, pos in selected:
+        # AcquisitionSettings already warns about positions outside the plate.
         if pos.plate_row is None or pos.plate_column is None:
             continue
         key = (pos.plate_row, pos.plate_column)
