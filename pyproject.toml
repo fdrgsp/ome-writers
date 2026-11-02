@@ -14,13 +14,12 @@ name = "ome-writers"
 dynamic = ["version"]
 description = "OME-TIFF and OME-ZARR writer APIs designed for microscopy acquisition"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "BSD-3-Clause" }
 classifiers = [
     "Development Status :: 4 - Beta",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -121,6 +120,8 @@ repository = "https://github.com/pymmcore-plus/ome-writers"
 
 [tool.uv.sources]
 ome-writers = { workspace = true }
+# Position-subsequence ordering follows the cite acquisition engine.
+useq-schema = { git = "https://github.com/fdrgsp/useq-schema", rev = "cite" }
 
 # https://docs.astral.sh/ruff
 [tool.ruff]
@@ -174,7 +175,7 @@ show_error_codes = true
 pretty = true
 
 [tool.pyright]
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 enableExperimentalFeatures = true
 reportArgumentType = false         # tough with pydantic type casting.
 reportAttributeAccessIssue = false # tough with pydantic 
