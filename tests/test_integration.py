@@ -448,7 +448,11 @@ def _extract_zarr(group: yaozarrs.ZarrGroup, array_path: Path) -> ArrayData:
     try:
         array_data = np.asarray(group["0"].to_tensorstore())
     except ImportError:
-        array_data = np.asarray(group["0"].to_zarr_python())
+        import zarr
+
+        # Older yaozarrs passes a file:// URL to zarr-python, which treats
+        # /C:/... as a literal path on Windows. Use the known local Path.
+        array_data = np.asarray(zarr.open_array(array_path, mode="r"))
 
     return ArrayData(
         shape=tuple(meta["shape"]),
