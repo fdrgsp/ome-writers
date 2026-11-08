@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Literal, cast
 import numpy as np
 
 from ome_writers._backends._backend import ArrayBackend
-from ome_writers._backends._ome_xml import prepare_metadata
+from ome_writers._backends._ome_xml import initial_tiff_xml, prepare_metadata
 from ome_writers._backends._tiff_array import FinalizedTiffArray, LiveTiffArray
 
 if TYPE_CHECKING:
@@ -184,6 +184,7 @@ class TiffBackend(ArrayBackend):
         # Prepare OME-XML metadata mirrors
         # mapping of filepath -> OmeXMLMirror
         metas = prepare_metadata(settings)
+        xmls = initial_tiff_xml(metas)
 
         # Describe each position's writer state without opening its file.  Large
         # tiled acquisitions can contain hundreds of positions; eagerly opening all
@@ -196,7 +197,7 @@ class TiffBackend(ArrayBackend):
                 write_state = TiffWriteState(
                     file_path=fname,
                     dtype=self._dtype,
-                    ome_xml=meta_mirror.model.to_xml(),
+                    ome_xml=xmls[fname],
                     compression=compression,
                     expected_frames=expected_frames,
                 )
