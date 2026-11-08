@@ -737,6 +737,17 @@ class OmeTiffFormat(_BaseModel):
         "where `{stem}` is the name of the output directory.  Bio-Formats only "
         "recognizes companion files ending in `.companion.ome`.",
     )
+    max_writer_threads: int = Field(
+        default=4,
+        ge=1,
+        description="Maximum number of background threads writing TIFF files.  "
+        "Each position file is always written by the same thread (so its frames "
+        "stay in order), and positions are spread across threads round-robin; "
+        "no more threads are started than there are files.  The default suits "
+        "local disks.  On slow or network storage, where a single write can "
+        "block for a long time, more threads let more files make progress at "
+        "once, at the cost of more concurrent open files.",
+    )
 
     def get_output_path(self, root_path: str, *, num_positions: int = 1) -> str:
         """Compute output path based on root_path and position count.

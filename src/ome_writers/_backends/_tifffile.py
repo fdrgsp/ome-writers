@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from ome_writers._backends._backend import ArrayLike
     from ome_writers._backends._ome_xml import OmeXMLMirror
     from ome_writers._router import FrameRouter
-    from ome_writers._schema import AcquisitionSettings, Dimension
+    from ome_writers._schema import AcquisitionSettings, Dimension, OmeTiffFormat
 
 try:
     import ome_types.model as ome
@@ -216,17 +216,19 @@ class TiffBackend(ArrayBackend):
                 metadata_mirror=meta_mirror,
             )
 
-        # A small fixed pool keeps thread usage bounded while allowing independent
-        # position files to make progress concurrently on slow/network storage.
-        # Starting the workers during prepare keeps thread startup out of acquisition
-        # timing; TIFF files themselves remain lazy and open only on their first job.
+        # A small bounded pool (`max_writer_threads`) keeps thread usage bounded
+        # while allowing independent position files to make progress concurrently
+        # on slow/network storage.  Starting the workers during prepare keeps thread
+        # startup out of acquisition timing; TIFF files themselves remain lazy and
+        # open only on their first job.
         tiff_count = sum(
             manager.write_state is not None
             for manager in self._position_managers.values()
         )
+        max_threads = cast("OmeTiffFormat", settings.format).max_writer_threads
         self._writer_threads = tuple(
             WriterThread(name=f"TiffWriterThread-{i}")
-            for i in range(min(4, tiff_count))
+            for i in range(min(max_threads, tiff_count))
         )
         for writer in self._writer_threads:
             writer.start()

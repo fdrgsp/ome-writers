@@ -187,6 +187,48 @@ def test_writer_pool_preserves_multiposition_order(tmp_path: Path, order: str) -
         assert np.array_equal(data[:, 0, 0], expected)
 
 
+@pytest.mark.parametrize("max_threads", [1, 3, 16])
+def test_max_writer_threads(tmp_path: Path, max_threads: int) -> None:
+    """`max_writer_threads` caps the pool, never exceeding the file count."""
+    position_count, time_count = 6, 3
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "pool.ome.tiff",
+        dimensions=[
+            Dimension(name="t", count=time_count, type="time"),
+            Dimension(name="p", count=position_count, type="position"),
+            Dimension(name="y", count=4, type="space"),
+            Dimension(name="x", count=4, type="space"),
+        ],
+        dtype="uint16",
+        format={"name": "ome-tiff", "max_writer_threads": max_threads},
+    )
+    with create_stream(settings) as stream:
+        backend = stream._backend
+        assert len(backend._writer_threads) == min(max_threads, position_count)
+        for value in range(position_count * time_count):
+            stream.append(np.full((4, 4), value, dtype=np.uint16))
+
+    paths = sorted((tmp_path / "pool").glob("*.ome.tiff"))
+    assert len(paths) == position_count
+    for position_idx, path in enumerate(paths):
+        data = _tifffile.tifffile.imread(path)
+        expected = position_idx + position_count * np.arange(time_count)
+        assert np.array_equal(data[:, 0, 0], expected)
+
+
+def test_max_writer_threads_must_be_positive(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="max_writer_threads"):
+        AcquisitionSettings(
+            root_path=tmp_path / "bad.ome.tiff",
+            dimensions=[
+                Dimension(name="y", count=4, type="space"),
+                Dimension(name="x", count=4, type="space"),
+            ],
+            dtype="uint16",
+            format={"name": "ome-tiff", "max_writer_threads": 0},
+        )
+
+
 def test_lazy_tiff_open_does_not_block_append(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
