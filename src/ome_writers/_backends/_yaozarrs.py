@@ -37,7 +37,6 @@ if TYPE_CHECKING:
     from typing import Literal, Protocol
 
     from typing_extensions import Self
-    from yaozarrs.write.v05._write import CompressionName
 
     from ome_writers._backends._backend import ArrayLike
     from ome_writers._router import FrameRouter
@@ -47,6 +46,9 @@ if TYPE_CHECKING:
         Plate,
         Position,
     )
+
+    # Mirrors yaozarrs' private `CompressionName`, whose module moved in 0.4.
+    CompressionName = Literal["blosc-zstd", "blosc-lz4", "zstd", "none"]
 
     class YaozArray(Protocol):
         """Protocol for array-like objects that support shape attribute."""
