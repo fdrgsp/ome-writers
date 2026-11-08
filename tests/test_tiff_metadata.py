@@ -371,11 +371,49 @@ def test_initial_tiff_xml(tmp_path: Path, mode: str, positions: list[str]) -> No
         format={"name": "ome-tiff", "multi_file_metadata": mode},
     )
     mirrors = prepare_metadata(settings)
-    assert initial_tiff_xml(mirrors) == {
-        path: mirror.model.to_xml()
+    xmls = initial_tiff_xml(mirrors)
+    assert xmls == {
+        path: mirror.export_model().to_xml()
         for path, mirror in mirrors.items()
         if mirror.is_tiff
     }
+    # every file's document is identified by its own root UUID
+    for path, xml in xmls.items():
+        assert from_xml(xml).uuid == mirrors[path].uuid
+    assert len({from_xml(xml).uuid for xml in xmls.values()}) == len(xmls)
+
+
+def test_redundant_mirrors_share_one_model(tmp_path: Path) -> None:
+    """Redundant files share one model instead of N deep copies of it."""
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "test.ome.tiff",
+        dimensions=[
+            Dimension(name="p", type="position", coords=["Pos0", "Pos1", "Pos2"]),
+            Dimension(name="y", count=8, type="space"),
+            Dimension(name="x", count=8, type="space"),
+        ],
+        dtype="uint16",
+        format={"name": "ome-tiff", "multi_file_metadata": "redundant"},
+    )
+    mirrors = list(prepare_metadata(settings).values())
+    assert len({id(m.model) for m in mirrors}) == 1
+
+    # a mutation through one mirror dirties all of them
+    assert not any(m.is_dirty for m in mirrors)
+    mirrors[0].mark_dirty()
+    assert all(m.is_dirty for m in mirrors)
+
+    # exported models are independent copies, each with its own UUID
+    exported = [m.export_model() for m in mirrors]
+    assert [e.uuid for e in exported] == [m.uuid for m in mirrors]
+    exported[0].images[0].name = "changed"
+    assert mirrors[1].model.images[0].name == "Pos0"
+
+    # assigning a model detaches that mirror only
+    replacement = exported[1]
+    mirrors[1].model = replacement
+    assert mirrors[1].model is replacement
+    assert mirrors[0].model is mirrors[2].model is not replacement
 
 
 def test_channel_metadata_in_tiff(tmp_path: Path, tiff_backend: str) -> None:
@@ -552,29 +590,21 @@ def test_frame_metadata_multiposition(tmp_path: Path, tiff_backend: str) -> None
         assert planes[0].delta_t == 0.0
         assert planes[1].delta_t == 1.0
 
-        # Get MapAnnotations for this position
+        # Every redundant file carries the full OME, so it holds the
+        # MapAnnotations of *all* frames (2 positions x 2 timepoints), and each
+        # Plane references the one recorded for its own frame.
         structured_annots = ome_obj.structured_annotations
         assert structured_annots is not None
-        map_annots = structured_annots.map_annotations
-        # NOTE!!
-        # this is actually a bug... there should be 4 total annotations,
-        # but we're not currently updating the "master" OME-XML correctly
-        # when writing multi-position files. we update each one differently.
-        # it's interesting: it might kinda be ok... you only get the structured
-        # annotations associated with the position you read...
-        # but not sure it's spec-compliant. for now, just test what we have.
-        assert len(map_annots) == 2
+        map_annots = {a.id: a for a in structured_annots.map_annotations}
+        assert len(map_annots) == 4
 
-        # Verify metadata is position-specific
-        for frame_idx, annot in enumerate(map_annots):
+        # Verify AnnotationRefs link this position's Planes to its MapAnnotations
+        for frame_idx, plane in enumerate(planes):
+            assert len(plane.annotation_refs) == 1
+            annot = map_annots[plane.annotation_refs[0].id]
             annot_dict = {m.k: m.value for m in annot.value.ms}
             assert annot_dict["position_name"] == pos_name
             assert annot_dict["frame_number"] == str(frame_idx)
-
-        # Verify AnnotationRefs link Planes to MapAnnotations
-        for frame_idx, plane in enumerate(planes):
-            assert len(plane.annotation_refs) == 1
-            assert plane.annotation_refs[0].id == map_annots[frame_idx].id
 
 
 # =============================================================================
@@ -1213,6 +1243,48 @@ def test_truncated_position_corrects_its_own_image(
     assert pos1.pixels.tiff_data_blocks[0].plane_count == 1
 
 
+def test_redundant_files_agree_on_every_position(tmp_path: Path) -> None:
+    """Every redundant file describes every position's *final* state.
+
+    The files share one model, so Pos1's truncation and each position's
+    per-frame metadata reach all files, not only the position's own file.
+    """
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "agree.ome.tiff",
+        dimensions=[
+            Dimension(name="p", type="position", coords=["Pos0", "Pos1"]),
+            Dimension(name="t", count=4, type="time"),
+            Dimension(name="y", count=8, type="space"),
+            Dimension(name="x", count=8, type="space"),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={"name": "ome-tiff", "multi_file_metadata": "redundant"},
+    )
+    with create_stream(settings) as stream:
+        for i in range(5):  # Pos0 complete, Pos1 truncated to one timepoint
+            stream.append(
+                np.zeros((8, 8), dtype=np.uint16), frame_metadata={"frame": i}
+            )
+
+    tiff_files = sorted(tmp_path.rglob("*.ome.tiff"))
+    docs = [from_tiff(str(path)) for path in tiff_files]
+    assert len(docs) == 2
+    assert docs[0].uuid != docs[1].uuid
+
+    for doc in docs:
+        pos0, pos1 = (image.pixels for image in doc.images)
+        assert (pos0.size_t, pos0.tiff_data_blocks[0].plane_count) == (4, 4)
+        assert (pos1.size_t, pos1.tiff_data_blocks[0].plane_count) == (1, 1)
+        assert (len(pos0.planes), len(pos1.planes)) == (4, 1)
+
+        # every Plane's AnnotationRef resolves within this same document
+        assert doc.structured_annotations is not None
+        ann_ids = {a.id for a in doc.structured_annotations.map_annotations}
+        for plane in (*pos0.planes, *pos1.planes):
+            assert {ref.id for ref in plane.annotation_refs} <= ann_ids
+
+
 def test_self_contained_stage_label_and_physical_sizes(tmp_path: Path) -> None:
     """Per-position StageLabel and physical sizes survive the per-file split."""
     dimensions = [
@@ -1763,9 +1835,9 @@ def test_frame_metadata_survives_every_multi_file_mode(
         for image in ome.images:
             if planes := image.pixels.planes:
                 assert image.name is not None
-                by_name.setdefault(image.name, []).extend(
-                    p.delta_t or 0.0 for p in planes
-                )
+                delta_ts = [p.delta_t or 0.0 for p in planes]
+                # redundant files each describe every Image: they must agree
+                assert by_name.setdefault(image.name, delta_ts) == delta_ts
                 for plane in planes:
                     dangling += sum(r.id not in ann_ids for r in plane.annotation_refs)
 

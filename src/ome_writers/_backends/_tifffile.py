@@ -71,8 +71,13 @@ class PositionManager:
             raise RuntimeError(f"Position {self.file_path!r} is not a TIFF file.")
         writer.enqueue(self.write_state, frame)
 
-    def finalize(self, index_dims: tuple[Dimension, ...] | None) -> None:
-        """Update metadata with the actual number of frames written.
+    def record_frames_written(self, index_dims: tuple[Dimension, ...] | None) -> None:
+        """Update in-memory metadata with the actual number of frames written.
+
+        Only mutates the model; `flush_final()` writes it.  The two are separate
+        so that, when files share one model (redundant mode), every position's
+        update lands before anything is serialized -- otherwise each flush would
+        re-serialize the full document.
 
         Parameters
         ----------
@@ -80,7 +85,26 @@ class PositionManager:
             Dimensions used for storage indexing, or None if unavailable.
             (usually just T, C, Z)
         """
-        # Update metadata based on actual frames written
+        state = self.write_state
+        if state is None or not state.started:
+            return
+
+        pixels = self.metadata_mirror.own_pixels()
+        if state.frames_written and index_dims and pixels is not None:
+            # Update the outermost dimension's size based on frames written
+            # This handles both unbounded dims and incomplete bounded dims
+            first, *inner = index_dims
+            inner_prod = math.prod(d.count or 1 for d in inner)
+            actual_outer_size = max(1, state.frames_written // inner_prod)
+            setattr(pixels, f"size_{first.name.lower()}", actual_outer_size)
+
+            # Update plane count
+            if data_blocks := pixels.tiff_data_blocks:
+                data_blocks[0].plane_count = state.frames_written
+            self.metadata_mirror.mark_dirty()
+
+    def flush_final(self) -> None:
+        """Write this position's final metadata, after `record_frames_written()`."""
         if self.write_state is None:
             # No thread means no TIFF file (e.g., companion OME-XML only)
             self.metadata_mirror.flush(force=True)
@@ -91,24 +115,9 @@ class PositionManager:
         if not self.write_state.started:
             return
 
-        # Update dimension sizes and plane count based on actual frames written
-        pixels = self.metadata_mirror.own_pixels()
-        if self.write_state.frames_written and index_dims and pixels is not None:
-            # Update the outermost dimension's size based on frames written
-            # This handles both unbounded dims and incomplete bounded dims
-            first, *inner = index_dims
-            inner_prod = math.prod(d.count or 1 for d in inner)
-            actual_outer_size = max(1, self.write_state.frames_written // inner_prod)
-            setattr(pixels, f"size_{first.name.lower()}", actual_outer_size)
-
-            # Update plane count
-            if data_blocks := pixels.tiff_data_blocks:
-                data_blocks[0].plane_count = self.write_state.frames_written
-            self.metadata_mirror.flush(force=True)
-        else:
-            # Fallback: flush if any in-memory modifications have been made (e.g.
-            # set_global_metadata on a 2D-only or zero-frame acquisition).  No force.
-            self.metadata_mirror.flush()
+        # Flush if anything changed: recorded frame counts, frame metadata, or
+        # set_global_metadata (also on a 2D-only or zero-frame acquisition).
+        self.metadata_mirror.flush()
 
 
 class TiffBackend(ArrayBackend):
@@ -392,14 +401,25 @@ class TiffBackend(ArrayBackend):
                 {k: json.dumps(v) for k, v in metadata.items()}
             )
 
-            for pos_idx in self._global_target_pos_idxs():
-                manager = self._position_managers[pos_idx]
+            targets = [
+                self._position_managers[i] for i in self._global_target_pos_idxs()
+            ]
+            # Annotate each distinct model once: redundant-mode files share one,
+            # and marking it dirty dirties every file that shares it.
+            annotated: set[int] = set()
+            for manager in targets:
                 with manager._lock:
-                    manager.metadata_mirror.set_map_annotation(namespace, value)
+                    model = manager.metadata_mirror.model
+                    if id(model) not in annotated:
+                        annotated.add(id(model))
+                        manager.metadata_mirror.set_map_annotation(namespace, value)
 
-                    # Post-finalize: writer threads are joined and files are
-                    # closed, so flush directly.
-                    if self._finalized:
+            # Post-finalize: writer threads are joined and files are closed, so
+            # flush directly (after all annotating, so a shared model is
+            # serialized once).
+            if self._finalized:
+                for manager in targets:
+                    with manager._lock:
                         manager.metadata_mirror.flush(force=True)
 
     def finalize(self) -> None:
@@ -414,10 +434,14 @@ class TiffBackend(ArrayBackend):
             for writer in self._writer_threads:
                 writer.join()
 
-            # Finalize each position (wait for thread and update metadata)
-            for manager in self._position_managers.values():
-                index_dims = self._storage_dims[:-2] if self._storage_dims else None
-                manager.finalize(index_dims)
+            # Record every position's actual frame count before writing any file:
+            # redundant-mode files share one model, which is then serialized once.
+            index_dims = self._storage_dims[:-2] if self._storage_dims else None
+            managers = self._position_managers.values()
+            for manager in managers:
+                manager.record_frames_written(index_dims)
+            for manager in managers:
+                manager.flush_final()
 
             self._finalized = True
 
@@ -506,7 +530,7 @@ class TiffBackend(ArrayBackend):
             return {}
 
         return {
-            p_idx: manager.metadata_mirror.model.model_copy(deep=True)
+            p_idx: manager.metadata_mirror.export_model()
             for p_idx, manager in self._position_managers.items()
         }
 

@@ -45,6 +45,41 @@ class MultiFileMetadata(Enum):
     """
 
 
+class SharedOMEModel:
+    """One full OME model shared by every file of a "redundant" multi-file set.
+
+    In redundant mode each file must carry the complete OME-XML, and the documents
+    differ only by their root `UUID`.  Holding N deep copies of an N-image model
+    (and serializing each) is O(N^2) in both memory and time, so the files share
+    this single model instead.  Every mutation goes through one model, which also
+    keeps all files consistent (e.g. one position's truncation is reflected in
+    every file, not only in its own).
+
+    `version` is bumped by `OmeXMLMirror.mark_dirty`; the serialized XML is cached
+    per version, so flushing N files costs one `to_xml()` plus N string swaps.
+    """
+
+    __slots__ = ("_placeholder_uuid", "_xml", "_xml_version", "model", "version")
+
+    def __init__(self, model: ome.OME) -> None:
+        if not model.uuid:  # pragma: no cover
+            raise ValueError("A shared OME model needs a root UUID to substitute.")
+        self.model = model
+        self.version = 0
+        # A UUID of its own that no `TiffData` refers to, so substituting its
+        # first occurrence (the root element's attribute) is unambiguous.
+        self._placeholder_uuid: str = model.uuid
+        self._xml = ""
+        self._xml_version = -1
+
+    def to_xml(self, uuid: str) -> str:
+        """Serialize the shared model as the document of the file with `uuid`."""
+        if self._xml_version != self.version:
+            self._xml = self.model.to_xml()
+            self._xml_version = self.version
+        return self._xml.replace(self._placeholder_uuid, uuid, 1)
+
+
 class OmeXMLMirror:
     """In-memory mirror of an on-disk OME-XML structure, with dirty tracking.
 
@@ -54,11 +89,17 @@ class OmeXMLMirror:
         Complete path to the OME-XML file or TIFF file that will contain the OME-XML
         metadata.
     model : ome.OME | None, optional
-        Initial OME model to use. If None, an empty OME model is created.
+        Initial OME model to use. If None, an empty OME model is created.  Ignored
+        when `shared` is given.
     image_index : int | None, optional
         Index of *this position's* `Image` within `model.images`. Full-OME mirrors
         carry every position, so the image sits at its position index (the default).
         Self-contained mirrors carry only their own image, at index 0.
+    shared : SharedOMEModel | None, optional
+        A model shared with other mirrors (redundant mode).  The mirror then owns
+        only its root `uuid`.  Assigning `model` later detaches the mirror.
+    uuid : str | None, optional
+        This file's root UUID; required with `shared`.
     """
 
     def __init__(
@@ -67,12 +108,62 @@ class OmeXMLMirror:
         pos_idx: int | None,
         model: ome.OME | None = None,
         image_index: int | None = None,
+        *,
+        shared: SharedOMEModel | None = None,
+        uuid: str | None = None,
     ) -> None:
+        if shared is not None and not uuid:  # pragma: no cover
+            raise ValueError("A mirror of a shared model needs its own `uuid`.")
         self.path: str = str(path)
         self.pos_idx: int = COMPANION_IDX if pos_idx is None else pos_idx
-        self.model = model or ome.OME()
+        self._shared = shared
+        self._own_model: ome.OME = ome.OME() if shared else (model or ome.OME())
+        self._shared_uuid = uuid or ""
         self.image_index: int = self.pos_idx if image_index is None else image_index
         self._dirty: bool = False
+        # shared-model version last written to this mirror's file
+        self._flushed_version: int = shared.version if shared else 0
+
+    @property
+    def model(self) -> ome.OME:
+        """The OME model this mirror's file is serialized from.
+
+        For a mirror of a shared model this is the shared object (whose root UUID
+        is a placeholder); use `uuid` / `export_model()` for this file's identity.
+        """
+        return self._shared.model if self._shared else self._own_model
+
+    @model.setter
+    def model(self, value: ome.OME) -> None:
+        # A caller-supplied model is this file's alone: stop sharing.
+        self._shared = None
+        self._own_model = value
+
+    @property
+    def uuid(self) -> str | None:
+        """Root UUID of this mirror's document."""
+        return self._shared_uuid if self._shared else self._own_model.uuid
+
+    def to_xml(self) -> str:
+        """Serialize this mirror's document (with its own root UUID)."""
+        if self._shared:
+            return self._shared.to_xml(self._shared_uuid)
+        return self._own_model.to_xml()
+
+    def export_model(self) -> ome.OME:
+        """Return an independent deep copy of this file's OME model."""
+        if self._shared:
+            return self._shared.model.model_copy(
+                deep=True, update={"uuid": self._shared_uuid}
+            )
+        return self._own_model.model_copy(deep=True)
+
+    @property
+    def is_dirty(self) -> bool:
+        """Whether in-memory metadata differs from what was last flushed."""
+        if self._dirty:
+            return True
+        return bool(self._shared) and self._shared.version != self._flushed_version
 
     def own_pixels(self) -> ome.Pixels | None:
         """Return the `Pixels` of this position's own `Image`, if present.
@@ -86,8 +177,15 @@ class OmeXMLMirror:
         return None
 
     def mark_dirty(self) -> None:
-        """Mark the OME-XML as dirty (modified)."""
+        """Mark the OME-XML as dirty (modified).
+
+        For a shared model this dirties every mirror sharing it and invalidates
+        the cached serialization, so callers must call it after *any* mutation of
+        `model`, not only before a non-forced `flush()`.
+        """
         self._dirty = True
+        if self._shared:
+            self._shared.version += 1
 
     def set_map_annotation(self, namespace: str, value: ome.Map) -> None:
         """Set a `MapAnnotation` keyed by `namespace`, preserving order.
@@ -121,7 +219,7 @@ class OmeXMLMirror:
                     for i, a in enumerate(existing)
                     if i <= idx or a.namespace != namespace
                 ]
-        self._dirty = True
+        self.mark_dirty()
 
     @property
     def is_tiff(self) -> bool:
@@ -130,10 +228,10 @@ class OmeXMLMirror:
 
     def flush(self, *, force: bool = False) -> None:
         """Mark the OME-XML as clean (not modified)."""
-        if not self._dirty and not force:  # pragma: no cover
+        if not self.is_dirty and not force:  # pragma: no cover
             return
 
-        xml_bytes = self.model.to_xml().encode("utf-8")
+        xml_bytes = self.to_xml().encode("utf-8")
         if self.is_tiff:
             try:
                 tifffile.tiffcomment(self.path, comment=xml_bytes)
@@ -148,6 +246,8 @@ class OmeXMLMirror:
                 f.write(xml_bytes)
 
         self._dirty = False
+        if self._shared:
+            self._flushed_version = self._shared.version
 
 
 def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
@@ -243,12 +343,12 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
         )
 
     elif metadata_mode == MultiFileMetadata.REDUNDANT:
-        # Each file gets a full copy, differing only in root UUID
+        # Each file carries the full model, differing only in root UUID.  They
+        # share one model rather than N deep copies (see `SharedOMEModel`).
+        shared = SharedOMEModel(full_model)
         for info in file_infos:
             mirrors[info.path] = OmeXMLMirror(
-                path=info.path,
-                pos_idx=info.pos_idx,
-                model=full_model.model_copy(deep=True, update={"uuid": info.uuid}),
+                path=info.path, pos_idx=info.pos_idx, shared=shared, uuid=info.uuid
             )
 
     elif metadata_mode == MultiFileMetadata.MASTER_TIFF:
@@ -318,29 +418,10 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
 def initial_tiff_xml(mirrors: dict[str, OmeXMLMirror]) -> dict[str, str]:
     """Return the OME-XML of each TIFF mirror freshly created by `prepare_metadata`.
 
-    The full OME models differ only by their root UUID (one per file in "redundant"
-    mode), and serializing one is O(n_positions), so only the first is serialized.
-    `BinaryOnly` stubs and "self-contained" models (each holding only its own
-    position's `Image`, at index 0) differ per file and are cheap to serialize, so
-    they are serialized individually.
+    Redundant-mode mirrors share one model (see `SharedOMEModel`), so it is
+    serialized once and each file only swaps in its own root UUID.
     """
-    xmls: dict[str, str] = {}
-    full_xml = full_uuid = ""
-    for path, mirror in mirrors.items():
-        model = mirror.model
-        if not mirror.is_tiff:
-            continue
-        assert model.uuid, "prepare_metadata gives every model a UUID"
-        is_full_copy = mirror.image_index == mirror.pos_idx
-        if model.binary_only is not None or not is_full_copy:
-            xmls[path] = model.to_xml()
-        elif not full_xml:
-            xmls[path] = full_xml = model.to_xml()
-            full_uuid = model.uuid
-        else:
-            # the root element's UUID is the first one in the document
-            xmls[path] = full_xml.replace(full_uuid, model.uuid, 1)
-    return xmls
+    return {path: m.to_xml() for path, m in mirrors.items() if m.is_tiff}
 
 
 # ---------------------------------------------------------------------------
