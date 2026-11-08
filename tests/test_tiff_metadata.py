@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import threading
-from pathlib import Path as PathlibPath
 from typing import Any
 
 import numpy as np
@@ -953,7 +952,7 @@ def test_file_structure_by_mode(tmp_path: Path, mode: MultiFileMetadata) -> None
                 ome = from_tiff(str(tiff_file))
                 assert ome.binary_only is not None
                 assert ome.binary_only.uuid == master_ome.uuid
-                assert PathlibPath(ome.binary_only.metadata_file).name == master.name
+                assert ome.binary_only.metadata_file == master.name
 
     elif mode == MultiFileMetadata.COMPANION:
         # Companion has full metadata, all TIFFs have BinaryOnly
@@ -972,10 +971,7 @@ def test_file_structure_by_mode(tmp_path: Path, mode: MultiFileMetadata) -> None
             ome = from_tiff(str(tiff_file))
             assert ome.binary_only is not None
             assert ome.binary_only.uuid == companion_ome.uuid
-            assert (
-                PathlibPath(ome.binary_only.metadata_file).name
-                == companion_files[0].name
-            )
+            assert ome.binary_only.metadata_file == companion_files[0].name
 
 
 @pytest.mark.parametrize("mode", ALL_MULTI_FILE_MODES)
@@ -1771,7 +1767,7 @@ def test_binary_only_reference_survives_moving_the_directory(
 
     for _, ome in stubs:
         assert ome.binary_only is not None
-        ref = PathlibPath(ome.binary_only.metadata_file)
+        ref = Path(ome.binary_only.metadata_file)
         assert not ref.is_absolute(), f"{ref} must not be an absolute path"
         assert str(ref) == ref.name, f"{ref} must be a bare filename"
 

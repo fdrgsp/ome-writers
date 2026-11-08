@@ -396,9 +396,10 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
             model=full_model,
         )
 
-        # All TIFF files get BinaryOnly, referring to the companion by name so the
-        # directory stays relocatable (see the master-tiff branch above).
-        companion_ref = Path(companion_path).name
+        # All TIFF files get BinaryOnly, referring to the companion relative to the
+        # TIFFs' directory (i.e. by name) so the set stays relocatable (see the
+        # master-tiff branch above).
+        companion_ref = companion_filename
         for info in file_infos:
             mirrors[info.path] = OmeXMLMirror(
                 path=info.path,
