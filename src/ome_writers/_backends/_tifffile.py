@@ -71,7 +71,11 @@ class PositionManager:
             raise RuntimeError(f"Position {self.file_path!r} is not a TIFF file.")
         writer.enqueue(self.write_state, frame)
 
-    def record_frames_written(self, index_dims: tuple[Dimension, ...] | None) -> None:
+    def record_frames_written(
+        self,
+        index_dims: tuple[Dimension, ...] | None,
+        target: tuple[OmeXMLMirror, int] | None,
+    ) -> None:
         """Update in-memory metadata with the actual number of frames written.
 
         Only mutates the model; `flush_final()` writes it.  The two are separate
@@ -84,12 +88,19 @@ class PositionManager:
         index_dims : tuple[Dimension, ...] | None
             Dimensions used for storage indexing, or None if unavailable.
             (usually just T, C, Z)
+        target : tuple[OmeXMLMirror, int] | None
+            The mirror holding this position's `Image`, and that Image's index
+            (see `TiffBackend._build_plane_targets`).  For a `master-tiff` or
+            `companion-file` stub this is the master/companion document, not
+            the stub's own mirror, which holds no `Image` at all.
         """
         state = self.write_state
-        if state is None or not state.started:
+        if state is None or not state.started or target is None:
             return
 
-        pixels = self.metadata_mirror.own_pixels()
+        mirror, image_index = target
+        images = mirror.model.images
+        pixels = images[image_index].pixels if 0 <= image_index < len(images) else None
         if state.frames_written and index_dims and pixels is not None:
             # Update the outermost dimension's size based on frames written
             # This handles both unbounded dims and incomplete bounded dims
@@ -101,7 +112,7 @@ class PositionManager:
             # Update plane count
             if data_blocks := pixels.tiff_data_blocks:
                 data_blocks[0].plane_count = state.frames_written
-            self.metadata_mirror.mark_dirty()
+            mirror.mark_dirty()
 
     def flush_final(self) -> None:
         """Write this position's final metadata, after `record_frames_written()`."""
@@ -438,11 +449,14 @@ class TiffBackend(ArrayBackend):
 
             # Record every position's actual frame count before writing any file:
             # redundant-mode files share one model, which is then serialized once.
+            # Each count goes to wherever that position's Image lives -- for a
+            # master-tiff/companion stub, the master/companion document.
             index_dims = self._storage_dims[:-2] if self._storage_dims else None
-            managers = self._position_managers.values()
-            for manager in managers:
-                manager.record_frames_written(index_dims)
-            for manager in managers:
+            for pos_idx, manager in self._position_managers.items():
+                manager.record_frames_written(
+                    index_dims, self._plane_targets.get(pos_idx)
+                )
+            for manager in self._position_managers.values():
                 manager.flush_final()
 
             self._finalized = True

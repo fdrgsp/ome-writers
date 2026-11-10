@@ -165,17 +165,6 @@ class OmeXMLMirror:
             return True
         return bool(self._shared) and self._shared.version != self._flushed_version
 
-    def own_pixels(self) -> ome.Pixels | None:
-        """Return the `Pixels` of this position's own `Image`, if present.
-
-        Returns None for BinaryOnly stubs and the companion mirror, which hold no
-        image of their own.
-        """
-        images = self.model.images
-        if 0 <= self.image_index < len(images):
-            return images[self.image_index].pixels
-        return None
-
     def mark_dirty(self) -> None:
         """Mark the OME-XML as dirty (modified).
 

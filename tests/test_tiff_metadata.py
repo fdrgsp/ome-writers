@@ -1239,6 +1239,58 @@ def test_truncated_position_corrects_its_own_image(
     assert pos1.pixels.tiff_data_blocks[0].plane_count == 1
 
 
+@pytest.mark.parametrize("mode", MULTI_FILE_MODES)
+@pytest.mark.parametrize(
+    ("order", "t_count", "n_frames", "expected"),
+    [
+        # unbounded time-lapse, positions interleaved: 3 timepoints each
+        ("tp", None, 6, [(3, 3), (3, 3)]),
+        # bounded, position-major, stopped early: A complete, B one timepoint
+        ("pt", 4, 5, [(4, 4), (1, 1)]),
+    ],
+    ids=["unbounded", "stopped-early"],
+)
+def test_full_ome_records_frames_written_for_every_position(
+    tmp_path: Path,
+    mode: MultiFileMetadata,
+    order: str,
+    t_count: int | None,
+    n_frames: int,
+    expected: list[tuple[int, int]],
+) -> None:
+    """The full OME document reports each position's own (size_t, plane_count).
+
+    In `master-tiff` and `companion-file` the positions' files are BinaryOnly
+    stubs, so the correction must land on the master/companion document, at
+    each position's `Image` -- not on the stub, which holds no `Image`.
+    """
+    index_dims = {
+        "t": Dimension(name="t", count=t_count, type="time"),
+        "p": Dimension(name="p", type="position", coords=["A", "B"]),
+    }
+    settings = AcquisitionSettings(
+        root_path=tmp_path / "frames.ome.tiff",
+        dimensions=[
+            *(index_dims[name] for name in order),
+            Dimension(name="y", count=8, type="space"),
+            Dimension(name="x", count=8, type="space"),
+        ],
+        dtype="uint16",
+        overwrite=True,
+        format={"name": "ome-tiff", "multi_file_metadata": mode.value},
+    )
+    with create_stream(settings) as stream:
+        for _ in range(n_frames):
+            stream.append(np.zeros((8, 8), dtype=np.uint16))
+
+    images = _get_full_ome(settings).images
+    assert [image.name for image in images] == ["A", "B"]
+    assert [
+        (image.pixels.size_t, image.pixels.tiff_data_blocks[0].plane_count)
+        for image in images
+    ] == expected
+
+
 def test_redundant_files_agree_on_every_position(tmp_path: Path) -> None:
     """Every redundant file describes every position's *final* state.
 
