@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from itertools import product
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -9,7 +10,22 @@ import numpy.typing as npt
 from ome_writers._schema import Dimension, dims_from_standard_axes
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+
+_T = TypeVar("_T")
+_R = TypeVar("_R")
+
+
+def thread_map(fn: Callable[[_T], _R], items: Iterable[_T]) -> list[_R]:
+    """Return `[fn(x) for x in items]`, running `fn` in a thread pool.
+
+    For many small file operations, whose latency adds up when run one at a time.
+    """
+    items = list(items)
+    if len(items) <= 1:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=min(32, len(items))) as pool:
+        return list(pool.map(fn, items))
 
 
 def fake_data_for_sizes(

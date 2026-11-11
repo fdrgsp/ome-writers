@@ -20,11 +20,16 @@ from ome_writers import __version__
 from ome_writers._backends._backend import ArrayBackend
 from ome_writers._backends._chunk_buffer import ChunkBuffer
 from ome_writers._schema import is_channel_dim
-from ome_writers._util import spatial_role_indices
+from ome_writers._util import spatial_role_indices, thread_map
 
 try:
     from yaozarrs import DimSpec, v05
-    from yaozarrs.write.v05 import Bf2RawBuilder, PlateBuilder, prepare_image
+    from yaozarrs.write.v05 import prepare_image
+
+    from ome_writers._backends._yaozarrs_concurrent import (
+        ConcurrentBf2RawBuilder,
+        ConcurrentPlateBuilder,
+    )
 except ImportError as e:
     raise ImportError(
         f"{__name__} requires yaozarrs with write support: "
@@ -153,7 +158,7 @@ class YaozarrsBackend(ArrayBackend, Generic[_AT]):
                 well_positions.setdefault(key, []).append((i, pos))
 
             # Build plate metadata and arrays
-            builder = PlateBuilder(
+            builder = ConcurrentPlateBuilder(
                 root,
                 plate=_build_yaozarrs_plate_model(settings.plate, well_positions),
                 overwrite=settings.overwrite,
@@ -195,7 +200,7 @@ class YaozarrsBackend(ArrayBackend, Generic[_AT]):
 
         # Multi-position (bf2raw layout)
         else:
-            builder = Bf2RawBuilder(
+            builder = ConcurrentBf2RawBuilder(
                 root,
                 overwrite=settings.overwrite,
                 chunks=chunks,
@@ -513,11 +518,14 @@ class YaozarrsBackend(ArrayBackend, Generic[_AT]):
     def _cache_metadata_from_arrays(self, root: Path) -> None:
         """Cache metadata from parent groups.
 
-        Reads zarr.json and caches their attributes in position order.
+        Reads zarr.json (concurrently: one per position) and caches their attributes
+        in position order.
         """
-        for group_path in self._image_group_paths:
-            if (zarr_json := root / group_path / "zarr.json").exists():
-                self._meta_mirrors[group_path] = JsonDocumentMirror(zarr_json).load()
+        paths = self._image_group_paths
+        mirrors = thread_map(
+            lambda p: JsonDocumentMirror(root / p / "zarr.json").load(), paths
+        )
+        self._meta_mirrors.update(zip(paths, mirrors, strict=True))
 
     def _should_use_chunk_buffering(self, storage_dims: list[Dimension]) -> bool:
         """Check if chunk buffering would be beneficial.
