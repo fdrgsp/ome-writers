@@ -158,13 +158,6 @@ class OmeXMLMirror:
             )
         return self._own_model.model_copy(deep=True)
 
-    @property
-    def is_dirty(self) -> bool:
-        """Whether in-memory metadata differs from what was last flushed."""
-        if self._dirty:
-            return True
-        return bool(self._shared) and self._shared.version != self._flushed_version
-
     def mark_dirty(self) -> None:
         """Mark the OME-XML as dirty (modified).
 
@@ -176,8 +169,8 @@ class OmeXMLMirror:
         if self._shared:
             self._shared.version += 1
 
-    def set_map_annotation(self, namespace: str, value: ome.Map) -> None:
-        """Set a `MapAnnotation` keyed by `namespace`, preserving order.
+    def set_map_annotation(self, new_ann: ome.MapAnnotation) -> None:
+        """Set a `MapAnnotation` keyed by its `namespace`, preserving order.
 
         If a `MapAnnotation` with the given `namespace` already exists in
         `structured_annotations.map_annotations`, it is replaced *in place*
@@ -192,7 +185,7 @@ class OmeXMLMirror:
         if not (structured := self.model.structured_annotations):
             self.model.structured_annotations = structured = ome.StructuredAnnotations()
 
-        new_ann = ome.MapAnnotation(namespace=namespace, value=value)
+        namespace = new_ann.namespace
         existing = structured.map_annotations
         idx = next(
             (i for i, a in enumerate(existing) if a.namespace == namespace),
@@ -211,13 +204,20 @@ class OmeXMLMirror:
         self.mark_dirty()
 
     @property
+    def dirty(self) -> bool:
+        """Whether the OME-XML has changed since it was last written."""
+        if self._dirty:
+            return True
+        return bool(self._shared) and self._shared.version != self._flushed_version
+
+    @property
     def is_tiff(self) -> bool:
         """Whether the OME-XML is stored in a TIFF file."""
         return self.path.lower().endswith((".tiff", ".tif"))
 
     def flush(self, *, force: bool = False) -> None:
-        """Mark the OME-XML as clean (not modified)."""
-        if not self.is_dirty and not force:  # pragma: no cover
+        """Write the OME-XML if modified (or forced), and mark it clean."""
+        if not self.dirty and not force:  # pragma: no cover
             return
 
         xml_bytes = self.to_xml().encode("utf-8")
@@ -405,8 +405,8 @@ def prepare_metadata(settings: AcquisitionSettings) -> dict[str, OmeXMLMirror]:
     return mirrors
 
 
-def initial_tiff_xml(mirrors: dict[str, OmeXMLMirror]) -> dict[str, str]:
-    """Return the OME-XML of each TIFF mirror freshly created by `prepare_metadata`.
+def tiff_xmls(mirrors: dict[str, OmeXMLMirror]) -> dict[str, str]:
+    """Return the OME-XML of each TIFF mirror.
 
     Redundant-mode mirrors share one model (see `SharedOMEModel`), so it is
     serialized once and each file only swaps in its own root UUID.
