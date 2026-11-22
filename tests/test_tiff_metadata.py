@@ -856,21 +856,22 @@ def test_finalize_abandons_stalled_writer(
     stalled, resume = threading.Event(), threading.Event()
     write = tifffile.TiffWriter.write
     pos1_writes = count()
+    stalled_threads: list[threading.Thread] = []
 
     def stalling_write(self: tifffile.TiffWriter, *args: Any, **kwargs: Any) -> Any:
         if self.filehandle.name.endswith("_p001.ome.tiff") and next(pos1_writes):
+            stalled_threads.append(threading.current_thread())
             stalled.set()
             resume.wait()  # Pos1 stalls after its first frame
         return write(self, *args, **kwargs)
 
     def join_writers(threads: dict[str, _tifffile.WriterThread]) -> list[str]:
-        # instead of a stall timeout: Pos1 is stalled exactly while blocked above
+        # instead of a stall timeout: Pos1's writer is stalled while blocked above
         stalled.wait()
-        pos1 = [p for p in threads if p.endswith("_p001.ome.tiff")]
-        for path, thread in threads.items():
-            if path not in pos1:
+        for thread in threads.values():
+            if thread not in stalled_threads:
                 thread.join()
-        return pos1
+        return [key for key, t in threads.items() if t in stalled_threads]
 
     monkeypatch.setattr(tifffile.TiffWriter, "write", stalling_write)
     monkeypatch.setattr(_tifffile, "_join_writers", join_writers)
