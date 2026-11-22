@@ -4,7 +4,8 @@ At the end of the edits, before committing/pushing, even if I do not ask, make
 sure the changes are done in the best/efficient way, remove useless
 comment/lines (also to reduce diff with upstream main), remove AI slop, avoid
 duplication, write tests following the repo pattern and, as always, use Python
-best practices.
+best practices. Then report it in your final message: say that you did this
+review and what it changed (or that nothing needed changing).
 
 After I ask to push, always monitor CI tests.
 
@@ -17,10 +18,10 @@ This is the `cite` fork of `ome-writers`, pinned by pymmcore-gui
 
 | Repo | What it holds |
 | --- | --- |
-| pymmcore-gui | the app; pins every fork below in `[tool.uv.sources]` |
-| pymmcore-widgets | Qt widgets: MDA editor (axis tables, autofocus, Surface Focus dialog), HCS wizard, stage/property/config widgets |
-| pymmcore-plus | `CMMCorePlus`, MDA runner/engine, ome-writers sink, autofocus routines, smart microscopy |
-| useq-schema | `useq` models: MDA sequence, plans, autofocus, focus surface |
+| pymmcore-gui | the app; pins all the forks |
+| pymmcore-widgets | Qt widgets: MDA editor, HCS wizard, device widgets |
+| pymmcore-plus | `CMMCorePlus`, MDA engine/sinks, autofocus, smart microscopy |
+| useq-schema | `useq` models: MDA sequence and plans, focus surface |
 | ndv | n-dimensional image viewer |
 
 A local clone of each one, on `cite`, normally sits next to this repo, in the
